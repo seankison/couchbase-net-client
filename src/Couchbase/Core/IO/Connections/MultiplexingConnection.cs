@@ -11,6 +11,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Couchbase.Core.Diagnostics.Tracing;
+using Couchbase.Core.Diagnostics.Tracing.ThresholdTracing;
 using Couchbase.Core.Exceptions.KeyValue;
 using Couchbase.Core.IO.Converters;
 using Couchbase.Core.IO.Operations;
@@ -18,6 +19,7 @@ using Couchbase.Core.IO.Operations.Errors;
 using Couchbase.Diagnostics;
 using Couchbase.Utils;
 using Microsoft.Extensions.Logging;
+using IRequestSpan = Couchbase.Core.Diagnostics.Tracing.IRequestSpan;
 
 #nullable enable
 
@@ -28,7 +30,7 @@ namespace Couchbase.Core.IO.Connections
         private const uint MaxDocSize = 20971520;
         private readonly Stream _stream;
         private readonly ILogger<MultiplexingConnection> _logger;
-        private readonly InFlightOperationSet _statesInFlight = new InFlightOperationSet();
+        private readonly InFlightOperationSet _statesInFlight = new(TimeSpan.FromSeconds(75));
         private readonly Stopwatch _stopwatch;
         private readonly object _syncObj = new object();
         private volatile bool _disposed;
@@ -38,9 +40,9 @@ namespace Couchbase.Core.IO.Connections
         private readonly string _connectionIdString;
 
         // Connection pooling normally prevents simultaneous writes, but there are cases where they may occur,
-        // such as when running Diagnostics pings). We therefore use an AsyncMutex instead of the slightly
-        // slower SemaphoreSlim.
-        private readonly AsyncMutex _writeMutex = new AsyncMutex();
+        // such as when running Diagnostics pings. We therefore need to prevent them ourselves, as the internal
+        // implementation of socket writes may interleave large buffers written from different threads.
+        private readonly SemaphoreSlim _writeMutex = new(1);
 
         public MultiplexingConnection(Socket socket, ILogger<MultiplexingConnection> logger)
             : this(new NetworkStream(socket, true), socket.LocalEndPoint, socket.RemoteEndPoint, logger)
@@ -96,7 +98,7 @@ namespace Couchbase.Core.IO.Connections
         public ServerFeatureSet ServerFeatures { get; set; } = ServerFeatureSet.Empty;
 
         /// <inheritdoc />
-        public async Task SendAsync(ReadOnlyMemory<byte> request, IOperation operation, ErrorMap? errorMap = null)
+        public async ValueTask SendAsync(ReadOnlyMemory<byte> request, IOperation operation, CancellationToken cancellationToken = default)
         {
             if (request.Length >= MaxDocSize)
             {
@@ -104,25 +106,23 @@ namespace Couchbase.Core.IO.Connections
             }
             if (_disposed)
             {
-                throw new ObjectDisposedException(nameof(MultiplexingConnection));
+                ThrowHelper.ThrowObjectDisposedException(nameof(MultiplexingConnection));
             }
 
-            var opaque = ByteConverter.ToUInt32(request.Span.Slice(HeaderOffsets.Opaque));
-            var state = new AsyncState(operation, opaque)
+            var state = new AsyncState(operation)
             {
-                EndPoint = (IPEndPoint)EndPoint,
+                EndPoint = EndPoint,
                 ConnectionId = ConnectionId,
-                ErrorMap = errorMap,
                 LocalEndpoint = _localEndPointString
             };
 
-            _statesInFlight.Add(state, 75000);
+            _statesInFlight.Add(state);
 
-            await _writeMutex.GetLockAsync().ConfigureAwait(false);
+            await _writeMutex.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-#if NETCOREAPP2_1 || NETCOREAPP3_0 || NETSTANDARD2_1
-                await _stream.WriteAsync(request).ConfigureAwait(false);
+#if SPAN_SUPPORT
+                await _stream.WriteAsync(request, cancellationToken).ConfigureAwait(false);
 #else
                 if (!MemoryMarshal.TryGetArray<byte>(request, out var arraySegment))
                 {
@@ -130,7 +130,7 @@ namespace Couchbase.Core.IO.Connections
                     arraySegment = new ArraySegment<byte>(request.ToArray());
                 }
 
-                await _stream.WriteAsync(arraySegment.Array, arraySegment.Offset, arraySegment.Count)
+                await _stream.WriteAsync(arraySegment.Array, arraySegment.Offset, arraySegment.Count, cancellationToken)
                     .ConfigureAwait(false);
 #endif
             }
@@ -140,7 +140,7 @@ namespace Couchbase.Core.IO.Connections
             }
             finally
             {
-                _writeMutex.ReleaseLock();
+                _writeMutex.Release();
             }
         }
 
@@ -170,7 +170,7 @@ namespace Couchbase.Core.IO.Connections
                     ReadOnlySequence<byte> buffer = result.Buffer;
 
                     // Process as many complete operation as we have in the buffer
-                    while (TryReadOperation(ref buffer, out IMemoryOwner<byte>? operationResponse))
+                    while (TryReadOperation(ref buffer, out SlicedMemoryOwner<byte> operationResponse))
                     {
                         try
                         {
@@ -178,7 +178,7 @@ namespace Couchbase.Core.IO.Connections
 
                             if (_statesInFlight.TryRemove(opaque, out var state))
                             {
-                                state.Complete(operationResponse);
+                                state.Complete(in operationResponse);
                             }
                             else
                             {
@@ -240,12 +240,12 @@ namespace Couchbase.Core.IO.Connections
         /// Parses the received data checking the buffer to see if a completed response has arrived.
         /// If it has, the operation is copied to a new, complete buffer and true is returned.
         /// </summary>
-        internal bool TryReadOperation(ref ReadOnlySequence<byte> buffer, [MaybeNullWhen(false)] out IMemoryOwner<byte> operationResponse)
+        internal bool TryReadOperation(ref ReadOnlySequence<byte> buffer, out SlicedMemoryOwner<byte> operationResponse)
         {
             if (buffer.Length < HeaderOffsets.HeaderLength)
             {
                 // Not enough data to read the body length from the header
-                operationResponse = null;
+                operationResponse = default;
                 return false;
             }
 
@@ -268,7 +268,7 @@ namespace Couchbase.Core.IO.Connections
             if (buffer.Length < responseSize)
             {
                 // Insufficient data, keep filling the buffer
-                operationResponse = null;
+                operationResponse = default;
                 return false;
             }
 
@@ -363,11 +363,16 @@ namespace Couchbase.Core.IO.Connections
         }
 
         /// <inheritdoc />
-        public void AddTags(IInternalSpan span)
+        public void AddTags(IRequestSpan span)
         {
-            span.WithTag(CouchbaseTags.RemoteAddress, _endPointString);
-            span.WithTag(CouchbaseTags.LocalAddress, _localEndPointString);
-            span.WithTag(CouchbaseTags.LocalId, _connectionIdString);
+            if (span.CanWrite)
+            {
+                span.SetAttribute(InnerRequestSpans.DispatchSpan.Attributes.LocalHostname, _endPointString);
+                span.SetAttribute(InnerRequestSpans.DispatchSpan.Attributes.LocalPort, ((IPEndPoint) LocalEndPoint).Port.ToString());
+                span.SetAttribute(InnerRequestSpans.DispatchSpan.Attributes.RemoteHostname, _endPointString);
+                span.SetAttribute(InnerRequestSpans.DispatchSpan.Attributes.RemotePort, ((IPEndPoint) EndPoint).Port.ToString());
+                span.SetAttribute(InnerRequestSpans.DispatchSpan.Attributes.LocalId, _connectionIdString);
+            }
         }
     }
 }

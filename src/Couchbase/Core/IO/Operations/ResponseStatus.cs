@@ -303,6 +303,11 @@ namespace Couchbase.Core.IO.Operations
         UnknownCollection = 0x88,
 
         /// <summary>
+        /// The Scope does not exist.
+        /// </summary>
+        UnknownScope = 0x8C,
+
+        /// <summary>
         /// Invalid request. Returned if an invalid durability level is specified.
         /// </summary>
         DurabilityInvalidLevel = 0xa0,
@@ -330,6 +335,11 @@ namespace Couchbase.Core.IO.Operations
         /// <summary>
         /// A SyncWrite request re-commit is in progress.
         /// </summary>
-        SyncWriteReCommitInProgress = 0xa4
+        SyncWriteReCommitInProgress = 0xa4,
+
+        /// <summary>
+        /// No collections manifest has been set. The server does not support scopes or collections.
+        /// </summary>
+        NoCollectionsManifest = 0x89
     }
 }

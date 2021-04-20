@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Linq;
 using System.Threading;
 using Couchbase.Core.IO.Serializers;
+using Couchbase.Core.Retry;
 using Couchbase.Utils;
 using Newtonsoft.Json;
 
@@ -63,6 +64,31 @@ namespace Couchbase.Query
             _statement = originalStatement;
             _preparedPayload = plan;
             IsPrepared = true;
+        }
+
+        /// <summary>
+        /// The bucket name for tracing.
+        /// </summary>
+        /// <remarks>For internal use only</remarks>
+        internal string? BucketName { get; set; }
+
+        /// <summary>
+        /// The bucket name for tracing.
+        /// </summary>
+        /// <remarks>For internal use only</remarks>
+        internal string? ScopeName { get; set; }
+
+        internal IRetryStrategy? RetryStrategyValue { get; set; }
+
+        /// <summary>
+        /// Overrides the global <see cref="IRetryStrategy"/> defined in <see cref="ClusterOptions"/> for a request.
+        /// </summary>
+        /// <param name="retryStrategy">The <see cref="IRetryStrategy"/> to use for a single request.</param>
+        /// <returns>The options.</returns>
+        public QueryOptions RetryStrategy(IRetryStrategy retryStrategy)
+        {
+            RetryStrategyValue = retryStrategy;
+            return this;
         }
 
         internal CancellationToken Token { get; set; } = System.Threading.CancellationToken.None;
@@ -272,7 +298,24 @@ namespace Couchbase.Query
         /// <remarks>
         ///     Any value set here will be overridden by the type of request sent.
         /// </remarks>
+        [Obsolete("Use QueryOptions.Readonly property instead.")]
         public QueryOptions ReadOnly(bool readOnly)
+        {
+            _readOnly = readOnly;
+            return this;
+        }
+
+        /// <summary>
+        ///     If a GET request, this will always be true otherwise false.
+        /// </summary>
+        /// <param name="readOnly">True for get requests.</param>
+        /// <returns>
+        ///     A reference to the current <see cref="QueryOptions" /> for method chaining.
+        /// </returns>
+        /// <remarks>
+        ///     Any value set here will be overridden by the type of request sent.
+        /// </remarks>
+        public QueryOptions Readonly(bool readOnly)
         {
             _readOnly = readOnly;
             return this;
@@ -288,7 +331,7 @@ namespace Couchbase.Query
         /// <remarks>
         ///     Optional.
         /// </remarks>
-        public QueryOptions Metrics(bool includeMetrics)
+            public QueryOptions Metrics(bool includeMetrics)
         {
             _includeMetrics = includeMetrics;
             return this;

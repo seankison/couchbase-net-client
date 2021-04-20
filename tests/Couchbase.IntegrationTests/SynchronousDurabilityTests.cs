@@ -21,13 +21,13 @@ namespace Couchbase.IntegrationTests
         [InlineData(DurabilityLevel.PersistToMajority)]
         public async Task Upsert_with_durability(DurabilityLevel durabilityLevel)
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
 
             // Upsert will throw exception if durability is not met
             await collection.UpsertAsync(
                 "id",
                 new {name = "mike"},
-                options => options.DurabilityLevel = durabilityLevel
+                options => options.Durability(durabilityLevel)
             ).ConfigureAwait(false);
         }
     }

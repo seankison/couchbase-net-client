@@ -2,31 +2,10 @@ namespace Couchbase.Core.IO.Operations
 {
     internal class Unlock : OperationBase
     {
+        /// <inheritdoc />
+        public override bool IsReadOnly => false;
+
         public override OpCode OpCode => OpCode.Unlock;
-
-        public override IOperation Clone()
-        {
-            var cloned = new Unlock
-            {
-                Key = Key,
-                ReplicaIdx = ReplicaIdx,
-                Transcoder = Transcoder,
-                VBucketId = VBucketId,
-                Attempts = Attempts,
-                Cas = Cas,
-                CreationTime = CreationTime,
-                Opaque = Opaque,
-                LastConfigRevisionTried = LastConfigRevisionTried,
-                BucketName = BucketName,
-                ErrorCode = ErrorCode
-            };
-            return cloned;
-        }
-
-        public override bool RequiresKey
-        {
-            get { return true; }
-        }
     }
 }
 

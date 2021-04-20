@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
 using Couchbase.Core.Configuration.Server;
+using Couchbase.Core.Diagnostics.Tracing;
+using Couchbase.Core.IO.Operations;
 using Couchbase.KeyValue;
+using Couchbase.Utils;
 using Microsoft.Extensions.Logging;
 
 #nullable enable
@@ -23,32 +26,9 @@ namespace Couchbase.Core.DI
         }
 
         /// <inheritdoc />
-        public IEnumerable<IScope> CreateScopes(BucketBase bucket, Manifest manifest)
+        public IScope CreateScope(string name, BucketBase bucket)
         {
-            if (bucket == null)
-            {
-                throw new ArgumentNullException(nameof(bucket));
-            }
-            if (manifest == null)
-            {
-                throw new ArgumentNullException(nameof(manifest));
-            }
-
-            foreach (var scopeDef in manifest.scopes)
-            {
-                yield return new Scope(scopeDef, _collectionFactory, bucket, _scopeLogger);
-            }
-        }
-
-        /// <inheritdoc />
-        public IScope CreateDefaultScope(BucketBase bucket)
-        {
-            if (bucket == null)
-            {
-                throw new ArgumentNullException(nameof(bucket));
-            }
-
-            return new Scope(null, _collectionFactory, bucket, _scopeLogger);
+            return new Scope(name, bucket,_collectionFactory, _scopeLogger);
         }
     }
 }

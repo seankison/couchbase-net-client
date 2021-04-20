@@ -10,7 +10,7 @@ namespace Couchbase.Core.IO.Transcoders
     public class JsonTranscoder : BaseTranscoder
     {
         public JsonTranscoder()
-            : this(new DefaultSerializer())
+            : this(DefaultSerializer.Instance)
         {
         }
 
@@ -47,9 +47,6 @@ namespace Couchbase.Core.IO.Transcoders
                 case TypeCode.DateTime:
                 case TypeCode.Char:
                 case TypeCode.String:
-#if NET45
-                case TypeCode.DBNull:
-#endif
                 case TypeCode.Empty:
                     dataFormat = DataFormat.Json;
                     break;

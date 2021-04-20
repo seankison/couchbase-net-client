@@ -8,6 +8,7 @@ using Couchbase.Core.Configuration.Server;
 using Couchbase.Core.Configuration.Server.Streaming;
 using Couchbase.Core.DI;
 using Couchbase.Core.Diagnostics.Tracing;
+using Couchbase.Core.IO.Operations;
 using Couchbase.Core.Logging;
 using Couchbase.Core.Retry;
 using Couchbase.KeyValue;
@@ -45,7 +46,7 @@ namespace Couchbase.UnitTests
         {
             var bucket = CreateMemcachedBucket();
 
-            Assert.Throws<NotSupportedException>(() => bucket["xxxxx"]);
+            Assert.ThrowsAsync<NotSupportedException>(async () => await bucket.ScopeAsync("xxxxx"));
         }
 
         [Fact(Skip = "Will be enabled in later commit.")]
@@ -68,7 +69,7 @@ namespace Couchbase.UnitTests
             var bucket = CreateMemcachedBucket();
             await bucket.BootstrapAsync(mockClusterNode.Object).ConfigureAwait(false);
 
-            var scope = bucket[Scope.DefaultScopeName];
+            var scope = await bucket.ScopeAsync(Scope.DefaultScopeName);
             Assert.Equal(Scope.DefaultScopeName, scope.Name);
         }
 
@@ -131,7 +132,9 @@ namespace Couchbase.UnitTests
                 new Mock<ILogger<MemcachedBucket>>().Object,
                 new Mock<IRedactor>().Object,
                 new Mock<IBootstrapperFactory>().Object,
-                NullRequestTracer.Instance);
+                NoopRequestTracer.Instance,
+                new Mock<IOperationConfigurator>().Object,
+                new BestEffortRetryStrategy());
         }
 
         #endregion

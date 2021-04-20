@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Couchbase.Core.IO.Operations;
 using Couchbase.Core.IO.Operations.SubDocument;
@@ -71,20 +72,20 @@ namespace Couchbase.UnitTests.KeyValue
 
         private List<LookupInSpec> _lookupInSpecs = new List<LookupInSpec>
         {
-            new LookupInSpec {Path = "name"},
-            new LookupInSpec {Path = "age"},
-            new LookupInSpec {Path = "animals"},
-            new LookupInSpec {Path = "animals[1]"},
-            new LookupInSpec {Path = "attributes"},
-            new LookupInSpec {Path = "attributes.hair"},
-            new LookupInSpec {Path = "attributes.dimensions"},
-            new LookupInSpec {Path = "attributes.dimensions.height"},
-            new LookupInSpec {Path = "attributes.dimensions.weight"},
-            new LookupInSpec {Path = "attributes.hobbies"},
-            new LookupInSpec {Path = "attributes.hobbies[0].type"},
-            new LookupInSpec {Path = "attributes.hobbies[1].name"},
-            new LookupInSpec {Path = "attributes.hobbies[1].details.location"},
-            new LookupInSpec {Path = "attributes.hobbies[1].details.location.long"}
+            new LookupInSpec {OpCode = OpCode.SubGet, Path = "name"},
+            new LookupInSpec {OpCode = OpCode.SubGet, Path = "age"},
+            new LookupInSpec {OpCode = OpCode.SubGet, Path = "animals"},
+            new LookupInSpec {OpCode = OpCode.SubGet, Path = "animals[1]"},
+            new LookupInSpec {OpCode = OpCode.SubGet, Path = "attributes"},
+            new LookupInSpec {OpCode = OpCode.SubGet, Path = "attributes.hair"},
+            new LookupInSpec {OpCode = OpCode.SubGet, Path = "attributes.dimensions"},
+            new LookupInSpec {OpCode = OpCode.SubGet, Path = "attributes.dimensions.height"},
+            new LookupInSpec {OpCode = OpCode.SubGet, Path = "attributes.dimensions.weight"},
+            new LookupInSpec {OpCode = OpCode.SubGet, Path = "attributes.hobbies"},
+            new LookupInSpec {OpCode = OpCode.SubGet, Path = "attributes.hobbies[0].type"},
+            new LookupInSpec {OpCode = OpCode.SubGet, Path = "attributes.hobbies[1].name"},
+            new LookupInSpec {OpCode = OpCode.SubGet, Path = "attributes.hobbies[1].details.location"},
+            new LookupInSpec {OpCode = OpCode.SubGet, Path = "attributes.hobbies[1].details.location.long"}
         };
 
         public class Dimensions
@@ -129,7 +130,7 @@ namespace Couchbase.UnitTests.KeyValue
         [Fact]
         public void Test_Projection()
         {
-            var getRequest = new MultiLookup<byte[]>();
+            var getRequest = new MultiLookup<byte[]>("thekey", Array.Empty<LookupInSpec>());
             getRequest.Read(new FakeMemoryOwner<byte>(_lookupInPacket));
 
             var readResult = new GetResult(getRequest.ExtractBody(),
@@ -148,7 +149,7 @@ namespace Couchbase.UnitTests.KeyValue
         [Fact]
         public void Test_Projection_With_Poco()
         {
-            var getRequest = new MultiLookup<byte[]>();
+            var getRequest = new MultiLookup<byte[]>("thekey", Array.Empty<LookupInSpec>());
             getRequest.Read(new FakeMemoryOwner<byte>(_lookupInPacket));
 
             var readResult = new GetResult(getRequest.ExtractBody(),
@@ -167,7 +168,7 @@ namespace Couchbase.UnitTests.KeyValue
         [Fact]
         public void Test_Projection_With_Dictionary()
         {
-            var getRequest = new MultiLookup<byte[]>();
+            var getRequest = new MultiLookup<byte[]>("thekey", Array.Empty<LookupInSpec>());
             getRequest.Read(new FakeMemoryOwner<byte>(_lookupInPacket));
 
             var readResult = new GetResult(getRequest.ExtractBody(),
@@ -186,7 +187,7 @@ namespace Couchbase.UnitTests.KeyValue
         [Fact]
         public void Test_ExpiryTime_Returns_Null_When_Expiry_Not_An_Option()
         {
-            var getRequest = new MultiLookup<byte[]>();
+            var getRequest = new MultiLookup<byte[]>("thekey", Array.Empty<LookupInSpec>());
             getRequest.Read(new FakeMemoryOwner<byte>(_lookupInPacket));
 
             var readResult = new GetResult(getRequest.ExtractBody(),

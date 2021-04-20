@@ -2,6 +2,8 @@ using System;
 using System.Threading.Tasks;
 using Couchbase.KeyValue;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace Couchbase.IntegrationTests.Fixtures
@@ -41,10 +43,10 @@ namespace Couchbase.IntegrationTests.Fixtures
             return bucket;
         }
 
-        public async Task<ICouchbaseCollection> GetDefaultCollection()
+        public async Task<ICouchbaseCollection> GetDefaultCollectionAsync()
         {
             var bucket = await GetDefaultBucket().ConfigureAwait(false);
-            return bucket.DefaultCollection();
+            return await bucket.DefaultCollectionAsync();
         }
 
         public static TestSettings GetSettings()
@@ -58,11 +60,25 @@ namespace Couchbase.IntegrationTests.Fixtures
 
         public static ClusterOptions GetClusterOptions()
         {
-            return new ConfigurationBuilder()
+            var settings = GetSettings();
+            var options = new ConfigurationBuilder()
                 .AddJsonFile("config.json")
                 .Build()
                 .GetSection("couchbase")
                 .Get<ClusterOptions>();
+
+            if (settings.EnableLogging)
+            {
+                IServiceCollection serviceCollection = new ServiceCollection();
+                serviceCollection.AddLogging(builder => builder
+                    .AddFilter(level => level >= LogLevel.Debug)
+                );
+                var loggerFactory = serviceCollection.BuildServiceProvider().GetService<ILoggerFactory>();
+                loggerFactory.AddFile("Logs/myapp-{Date}.txt", LogLevel.Debug);
+                options.WithLogging(loggerFactory);
+            }
+
+            return options;
         }
 
         public async Task InitializeAsync()

@@ -15,7 +15,7 @@ namespace Couchbase.Core.IO.Transcoders
     public class LegacyTranscoder : BaseTranscoder
      {
         public LegacyTranscoder()
-            : this(new DefaultSerializer())
+            : this(DefaultSerializer.Instance)
         {
         }
 
@@ -107,9 +107,6 @@ namespace Couchbase.Core.IO.Transcoders
             switch (typeCode)
             {
                 case TypeCode.Empty:
-#if NET45
-                case TypeCode.DBNull:
-#endif
                 case TypeCode.String:
                 case TypeCode.Char:
                     var str = Convert.ToString(value);
@@ -266,9 +263,6 @@ namespace Couchbase.Core.IO.Transcoders
             switch (typeCode)
             {
                 case TypeCode.Empty:
-#if NET45
-                case TypeCode.DBNull:
-#endif
                 case TypeCode.String:
                     value = DecodeString(buffer.Span);
                     break;

@@ -18,6 +18,7 @@ using Couchbase.KeyValue;
 using Couchbase.Management.Buckets;
 using Couchbase.UnitTests.Utils;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.ObjectPool;
 using Moq;
 using Newtonsoft.Json;
 using Xunit;
@@ -46,7 +47,7 @@ namespace Couchbase.UnitTests.Core.IO.Errors
             var node = new ClusterNode(new ClusterContext(new CancellationTokenSource(),
                     new ClusterOptions()), mockConnectionPoolFactory.Object,
                 new Mock<ILogger<ClusterNode>>().Object,
-                new Mock<ITypeTranscoder>().Object,
+                new DefaultObjectPool<OperationBuilder>(new OperationBuilderPoolPolicy()),
                 new Mock<ICircuitBreaker>().Object,
                 new Mock<ISaslMechanismFactory>().Object,
                 new Mock<IRedactor>().Object,
@@ -56,7 +57,7 @@ namespace Couchbase.UnitTests.Core.IO.Errors
                 {
                     Hostname = "127.0.0.1"
                 },
-                NullRequestTracer.Instance)
+                NoopRequestTracer.Instance)
             {
                 ErrorMap = errorMap
             };
@@ -69,7 +70,7 @@ namespace Couchbase.UnitTests.Core.IO.Errors
 
             try
             {
-                await node.ExecuteOp(insert, CancellationToken.None).ConfigureAwait(false);
+                await node.ExecuteOp(insert).ConfigureAwait(false);
             }
             catch (DocumentExistsException e)
             {
@@ -88,7 +89,7 @@ namespace Couchbase.UnitTests.Core.IO.Errors
         {
             private readonly OpCode _operationCode;
 
-            public FakeOperation(OpCode operationCode, ResponseStatus status, ErrorCode errorCode = null) : base()
+            public FakeOperation(OpCode operationCode, ResponseStatus status) : base()
             {
                 Key = "hi";
                 _operationCode = operationCode;
@@ -97,7 +98,6 @@ namespace Couchbase.UnitTests.Core.IO.Errors
                     Status = status,
                     OpCode = _operationCode
                 };
-                ErrorCode = errorCode;
             }
 
             public override Task SendAsync(IConnection connection, CancellationToken cancellationToken = default)

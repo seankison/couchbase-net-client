@@ -5,42 +5,23 @@ namespace Couchbase.Core.IO.Operations
 {
     internal class GetL<T> : Get<T>
     {
-        public override void WriteExtras(OperationBuilder builder)
+        /// <inheritdoc />
+        public override bool IsReadOnly => false;
+
+        protected override void WriteExtras(OperationBuilder builder)
         {
             Span<byte> extras = stackalloc byte[4];
             ByteConverter.FromUInt32(Expiry, extras);
             builder.Write(extras);
         }
 
-        public override void WriteBody(OperationBuilder builder)
+        protected override void WriteBody(OperationBuilder builder)
         {
         }
 
         public uint Expiry { get; set; }
 
         public override OpCode OpCode => OpCode.GetL;
-
-        public override bool Idempotent { get; } = false;
-
-        public override IOperation Clone()
-        {
-            var cloned = new GetL<T>
-            {
-                Key = Key,
-                ReplicaIdx = ReplicaIdx,
-                Content = Content,
-                Transcoder = Transcoder,
-                VBucketId = VBucketId,
-                Opaque = Opaque,
-                Attempts = Attempts,
-                Cas = Cas,
-                CreationTime = CreationTime,
-                LastConfigRevisionTried = LastConfigRevisionTried,
-                BucketName = BucketName,
-                ErrorCode = ErrorCode
-            };
-            return cloned;
-        }
     }
 }
 

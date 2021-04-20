@@ -1,14 +1,13 @@
 using System;
-using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 using Couchbase.Core;
 using Couchbase.Core.Diagnostics.Tracing;
 using Couchbase.Core.IO;
 using Couchbase.Core.IO.Connections;
 using Couchbase.Core.IO.Operations;
-using Couchbase.Core.IO.Operations.Errors;
 
 namespace Couchbase.LoadTests.Helpers
 {
@@ -31,31 +30,25 @@ namespace Couchbase.LoadTests.Helpers
         public TimeSpan IdleTime { get; set; }
         public ServerFeatureSet ServerFeatures { get; set; } = ServerFeatureSet.Empty;
 
-        public Task SendAsync(ReadOnlyMemory<byte> buffer, IOperation operation, ErrorMap errorMap = null)
+        public ValueTask SendAsync(ReadOnlyMemory<byte> buffer, IOperation operation, CancellationToken cancellationToken = default)
         {
-            return Task.CompletedTask;
+            operation.HandleOperationCompleted(AsyncState.BuildErrorResponse(0, ResponseStatus.KeyNotFound));
+            return default;
         }
 
         public bool InUse { get; set; }
-        public void MarkUsed(bool isUsed)
-        {
-        }
 
-        public bool IsDisposed { get; set; }
-        public bool HasShutdown { get; set; }
         public void Authenticate()
         {
         }
 
-        public bool CheckedForEnhancedAuthentication { get; set; }
-        public bool MustEnableServerFeatures { get; set; }
         public ValueTask CloseAsync(TimeSpan timeout)
         {
             Dispose();
             return default;
         }
 
-        public void AddTags(IInternalSpan span)
+        public void AddTags(IRequestSpan span)
         {
         }
     }

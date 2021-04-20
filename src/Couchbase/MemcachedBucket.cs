@@ -28,15 +28,15 @@ namespace Couchbase
         private readonly HttpClusterMapBase _httpClusterMap;
 
         internal MemcachedBucket(string name, ClusterContext context, IScopeFactory scopeFactory, IRetryOrchestrator retryOrchestrator, IKetamaKeyMapperFactory ketamaKeyMapperFactory,
-            ILogger<MemcachedBucket> logger, IRedactor redactor, IBootstrapperFactory bootstrapperFactory, IRequestTracer tracer) :
+            ILogger<MemcachedBucket> logger, IRedactor redactor, IBootstrapperFactory bootstrapperFactory, IRequestTracer tracer, IOperationConfigurator operationConfigurator, IRetryStrategy retryStrategy) :
             this(name, context, scopeFactory, retryOrchestrator, ketamaKeyMapperFactory, logger,
-                new HttpClusterMap(context.ServiceProvider.GetRequiredService<CouchbaseHttpClient>(), context), redactor, bootstrapperFactory, tracer)
+                new HttpClusterMap(context.ServiceProvider.GetRequiredService<CouchbaseHttpClient>(), context), redactor, bootstrapperFactory, tracer, operationConfigurator, retryStrategy)
         {
         }
 
         internal MemcachedBucket(string name, ClusterContext context, IScopeFactory scopeFactory, IRetryOrchestrator retryOrchestrator, IKetamaKeyMapperFactory ketamaKeyMapperFactory,
-            ILogger<MemcachedBucket> logger, HttpClusterMapBase httpClusterMap, IRedactor redactor, IBootstrapperFactory bootstrapperFactory, IRequestTracer tracer)
-            : base(name, context, scopeFactory, retryOrchestrator, logger, redactor, bootstrapperFactory, tracer)
+            ILogger<MemcachedBucket> logger, HttpClusterMapBase httpClusterMap, IRedactor redactor, IBootstrapperFactory bootstrapperFactory, IRequestTracer tracer, IOperationConfigurator operationConfigurator, IRetryStrategy retryStrategy)
+            : base(name, context, scopeFactory, retryOrchestrator, logger, redactor, bootstrapperFactory, tracer, operationConfigurator, retryStrategy)
         {
             BucketType = BucketType.Memcached;
             Name = name;
@@ -88,7 +88,7 @@ namespace Couchbase
             }
         }
 
-        internal override async Task SendAsync(IOperation op, CancellationToken token = default)
+        internal override Task SendAsync(IOperation op, CancellationTokenPair tokenPair = default)
         {
             if (KeyMapper == null)
             {
@@ -100,12 +100,11 @@ namespace Couchbase
 
             if (Nodes.TryGet(endPoint, out var clusterNode))
             {
-                await clusterNode.ExecuteOp(op, token).ConfigureAwait(false);
+                return clusterNode.ExecuteOp(op, tokenPair);
             }
-            else
-            {
-                //raise exception that node is not found
-            }
+
+            //raise exception that node is not found
+            return Task.CompletedTask;
         }
 
         internal override async Task BootstrapAsync(IClusterNode node)
@@ -118,11 +117,20 @@ namespace Couchbase
                 //fetch the cluster map to avoid race condition with streaming http
                 BucketConfig = await _httpClusterMap.GetClusterMapAsync(
                     Name, node.BootstrapEndpoint, CancellationToken.None).ConfigureAwait(false);
+                if (Context.ClusterOptions.HasNetworkResolution)
+                {
+                    //Network resolution determined at the GCCCP level
+                    BucketConfig.NetworkResolution = Context.ClusterOptions.EffectiveNetworkResolution;
+                }
+                else
+                {
+                    //A non-GCCCP cluster
+                    BucketConfig.SetEffectiveNetworkResolution(node.BootstrapEndpoint, Context.ClusterOptions);
+                }
 
                 KeyMapper = await _ketamaKeyMapperFactory.CreateAsync(BucketConfig).ConfigureAwait(false);
 
                 node.Owner = this;
-                LoadManifest();
                 await Context.ProcessClusterMapAsync(this, BucketConfig).ConfigureAwait(false);
             }
             catch (CouchbaseException e)

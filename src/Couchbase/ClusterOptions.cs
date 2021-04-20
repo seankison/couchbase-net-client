@@ -8,13 +8,18 @@ using Couchbase.Core.CircuitBreakers;
 using Couchbase.Core.Compatibility;
 using Couchbase.Core.DI;
 using Couchbase.Core.Diagnostics.Tracing;
+using Couchbase.Core.Diagnostics.Tracing.ThresholdTracing;
 using Couchbase.Core.IO.Authentication.X509;
 using Couchbase.Core.IO.Compression;
+using Couchbase.Core.IO.Connections;
+using Couchbase.Core.IO.Connections.Channels;
 using Couchbase.Core.IO.Serializers;
 using Couchbase.Core.IO.Transcoders;
 using Couchbase.Core.Logging;
+using Couchbase.Core.Retry;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using IRequestTracer = Couchbase.Core.Diagnostics.Tracing.IRequestTracer;
 
 // ReSharper disable UnusedMember.Global
 
@@ -27,6 +32,32 @@ namespace Couchbase
     /// </summary>
     public sealed class ClusterOptions
     {
+        public ClusterOptions()
+        {
+            HttpCertificateCallbackValidation  = (sender, certificate, chain, sslPolicyErrors) =>
+            {
+                if (HttpIgnoreRemoteCertificateMismatch)
+                {
+                    // mask out the name mismatch error, and the chain error that comes along with it
+                    sslPolicyErrors &= ~SslPolicyErrors.RemoteCertificateNameMismatch;
+                    sslPolicyErrors &= ~SslPolicyErrors.RemoteCertificateChainErrors;
+                }
+
+                return sslPolicyErrors == SslPolicyErrors.None;
+            };
+
+            KvCertificateCallbackValidation = (sender, certificate, chain, sslPolicyErrors) =>
+            {
+                if (KvIgnoreRemoteCertificateNameMismatch)
+                {
+                    // mask out the name mismatch error, and the chain error that comes along with it
+                    sslPolicyErrors &= ~SslPolicyErrors.RemoteCertificateNameMismatch;
+                    sslPolicyErrors &= ~SslPolicyErrors.RemoteCertificateChainErrors;
+                }
+
+                return sslPolicyErrors == SslPolicyErrors.None;
+            };
+        }
         internal ConnectionString? ConnectionStringValue { get; set; }
 
         /// <summary>
@@ -136,6 +167,10 @@ namespace Couchbase
                     if (ConnectionStringValue.TryGetParameter(CStringParams.CompressionMinRatio, out float compressionMinRatio))
                     {
                         CompressionMinRatio = compressionMinRatio;
+                    }
+                    if (ConnectionStringValue.TryGetParameter(CStringParams.NetworkResolution, out string networkResolution))
+                    {
+                        NetworkResolution = networkResolution;
                     }
                 }
             }
@@ -317,9 +352,9 @@ namespace Couchbase
             return this;
         }
 
-        public ThresholdOptions? ThresholdOptions { get; set; } = new ThresholdOptions();
+        public ThresholdOptions ThresholdOptions { get; set; } = new();
 
-        public ClusterOptions WithThresholdTracing(ThresholdOptions? options = null)
+        public ClusterOptions WithThresholdTracing(ThresholdOptions options)
         {
             ThresholdOptions = options;
             return this;
@@ -331,6 +366,22 @@ namespace Couchbase
             configure(opts);
             return WithThresholdTracing(opts);
         }
+
+        /// <summary>
+        /// The <see cref="IRetryStrategy"/> for operation retries. Applies to all services: K/V, Query, etc.
+        /// </summary>
+        /// <param name="retryStrategy">The custom <see cref="RetryStrategy"/>.</param>
+        /// <returns></returns>
+        public ClusterOptions WithRetryStrategy(IRetryStrategy retryStrategy)
+        {
+            RetryStrategy = retryStrategy;
+            return this;
+        }
+
+        /// <summary>
+        /// The <see cref="IRetryStrategy"/> for operation retries. Applies to all services: K/V, Query, etc.
+        /// </summary>
+        public IRetryStrategy? RetryStrategy { get; set; } = new BestEffortRetryStrategy();
 
         public string? UserName { get; set; }
         public string? Password { get; set; }
@@ -388,7 +439,7 @@ namespace Couchbase
         [Obsolete("Not supported in .NET, uses system defaults.")]
         public TimeSpan IdleHttpConnectionTimeout { get; set; }
 
-        public CircuitBreakerConfiguration CircuitBreakerConfiguration { get; set; } =
+        public CircuitBreakerConfiguration? CircuitBreakerConfiguration { get; set; } =
             CircuitBreakerConfiguration.Default;
 
         public bool EnableOperationDurationTracing { get; set; } = true;
@@ -421,7 +472,12 @@ namespace Couchbase
         /// <summary>
         /// Ignore CertificateNameMismatch and CertificateChainMismatch, since they happen together.
         /// </summary>
-        public bool IgnoreRemoteCertificateNameMismatch { get; set; }
+        [Obsolete("Use KvIgnoreRemoteCertificateNameMismatch and/or HttpIgnoreRemoteCertificateMismatch instead of this property.")]
+        public bool IgnoreRemoteCertificateNameMismatch
+        {
+            get => KvIgnoreRemoteCertificateNameMismatch && HttpIgnoreRemoteCertificateMismatch;
+            set => KvIgnoreRemoteCertificateNameMismatch = HttpIgnoreRemoteCertificateMismatch = value;
+        }
 
         private bool _enableOrphanedResponseLogging;
         public bool EnableOrphanedResponseLogging
@@ -433,14 +489,14 @@ namespace Couchbase
                 {
                     _enableOrphanedResponseLogging = value;
 
-                    if (value)
+                    /*if (value)
                     {
-                        this.AddClusterService<IOrphanedResponseLogger, OrphanedResponseLogger>();
+                        this.AddClusterService<Couchbase.Core.Diagnostics.Tracing.IOrphanedResponseLogger, Couchbase.Core.Diagnostics.Tracing.OrphanedResponseLogger>();//TODO temp
                     }
                     else
                     {
-                        this.AddClusterService<IOrphanedResponseLogger, NullOrphanedResponseLogger>();
-                    }
+                        this.AddClusterService<Couchbase.Core.Diagnostics.Tracing.IOrphanedResponseLogger, Couchbase.Core.Diagnostics.Tracing.NullOrphanedResponseLogger>();
+                    }*/
                 }
             }
         }
@@ -448,7 +504,9 @@ namespace Couchbase
         public bool EnableConfigPolling { get; set; } = true;
         public bool EnableTcpKeepAlives { get; set; } = true;
         public bool EnableDnsSrvResolution { get; set; } = true;
-        public string NetworkResolution => Couchbase.NetworkResolution.Auto;
+        public string NetworkResolution { get; set; } = Couchbase.NetworkResolution.Auto;
+        [CanBeNull] internal string? EffectiveNetworkResolution { get; set; }
+        internal bool HasNetworkResolution => !string.IsNullOrWhiteSpace(EffectiveNetworkResolution);
 
         /// <summary>
         /// Enables compression for key/value operations.
@@ -475,6 +533,12 @@ namespace Couchbase
         /// </remarks>
         public float CompressionMinRatio { get; set; } = 0.83f;
 
+        /// <inheritdoc cref="TuningOptions"/>
+        public TuningOptions Tuning { get; set; } = new();
+
+        /// <inheritdoc cref="ExperimentalOptions"/>
+        public ExperimentalOptions Experiments { get; set; } = new();
+
         /// <summary>
         /// Provides a default implementation of <see cref="ClusterOptions"/>.
         /// </summary>
@@ -485,20 +549,31 @@ namespace Couchbase
         /// </summary>
         internal bool EffectiveEnableTls => EnableTls ?? ConnectionStringValue?.Scheme == Scheme.Couchbases;
 
-        internal bool ValidateCertificateCallback(object sender,
-            X509Certificate certificate,
-            X509Chain chain,
-            SslPolicyErrors sslPolicyErrors)
-        {
-            if (IgnoreRemoteCertificateNameMismatch)
-            {
-                // mask out the name mismatch error, and the chain error that comes along with it
-                sslPolicyErrors &= ~SslPolicyErrors.RemoteCertificateNameMismatch;
-                sslPolicyErrors &= ~SslPolicyErrors.RemoteCertificateChainErrors;
-            }
+        /// <summary>
+        /// Ignore CertificateNameMismatch and CertificateChainMismatch for Key/Value operations, since they happen together.
+        /// </summary>
+        public bool KvIgnoreRemoteCertificateNameMismatch { get; set; }
 
-            return sslPolicyErrors == SslPolicyErrors.None;
-        }
+        /// <summary>
+        /// The default RemoteCertificateValidationCallback called by .NET to validate the TLS/SSL certificates being used for
+        /// Key/Value operations. To ignore RemoteCertificateNameMismatch and RemoteCertificateChainErrors errors caused when the
+        /// subject and subject alternative name do not match the requesting DNS name, set ClusterOptions.KvCertificateCallbackValidation
+        /// to true.
+        /// </summary>
+        public RemoteCertificateValidationCallback KvCertificateCallbackValidation { get; set; }
+
+        /// <summary>
+        /// Ignore CertificateNameMismatch and CertificateChainMismatch for HTTP services (Query, FTS, Analytics, etc), since they happen together.
+        /// </summary>
+        public bool HttpIgnoreRemoteCertificateMismatch { get; set; }
+
+        /// <summary>
+        /// The default RemoteCertificateValidationCallback called by .NET to validate the TLS/SSL certificates being used for
+        /// HTTP services (Query, FTS, Analytics, etc). To ignore RemoteCertificateNameMismatch and RemoteCertificateChainErrors
+        /// errors caused when the subject and subject alternative name do not match the requesting DNS name, set
+        /// ClusterOptions.KvCertificateCallbackValidation to true.
+        /// </summary>
+        public RemoteCertificateValidationCallback HttpCertificateCallbackValidation { get; set; }
 
         public ICertificateFactory? X509CertificateFactory { get; set; }
 
@@ -522,11 +597,27 @@ namespace Couchbase
         internal IServiceProvider BuildServiceProvider()
         {
             this.AddClusterService(this);
-            this.AddClusterService(Logging ?? new NullLoggerFactory());
-
-            if (ThresholdOptions?.Enabled ?? false)
+            this.AddClusterService(Logging ??= new NullLoggerFactory());
+            if (ThresholdOptions.Enabled)
             {
-                _services[typeof(IRequestTracer)] = new SingletonServiceFactory(typeof(ActivityRequestTracer));
+                //No custom logger has been registered, so create a default logger
+                if (ThresholdOptions.RequestTracer == null)
+                {
+                    var thresholdTracer = new ThresholdRequestTracer(ThresholdOptions, Logging);
+                    thresholdTracer.Start(new ThresholdTraceListener(ThresholdOptions));
+                    ThresholdOptions.RequestTracer = thresholdTracer;
+                }
+
+                this.AddClusterService(ThresholdOptions.RequestTracer);
+            }
+            else
+            {
+                this.AddClusterService(NoopRequestTracer.Instance);
+            }
+
+            if (Experiments.ChannelConnectionPools)
+            {
+                this.AddClusterService<IConnectionPoolFactory, ChannelConnectionPoolFactory>();
             }
 
             if (Serializer != null)
@@ -547,6 +638,11 @@ namespace Couchbase
             if (CircuitBreakerConfiguration != null)
             {
                 this.AddClusterService(CircuitBreakerConfiguration);
+            }
+
+            if (RetryStrategy != null)
+            {
+                this.AddClusterService(RetryStrategy);
             }
 
             return new CouchbaseServiceProvider(_services);

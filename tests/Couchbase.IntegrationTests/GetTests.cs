@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Couchbase.Core.IO.Serializers;
 using Couchbase.Core.IO.Transcoders;
@@ -55,7 +56,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Can_get_document()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             var key = Guid.NewGuid().ToString();
 
             try
@@ -78,7 +79,7 @@ namespace Couchbase.IntegrationTests
         // Regression test for NCBC-2217
         [Fact]
         public async Task Upsert_And_Fetch_Poco() {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
 
             var testData = new TestData() {
                 StringTest = "test",
@@ -115,7 +116,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Can_Get_Document_As_Poco()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             var key = Guid.NewGuid().ToString();
 
             var poco = new Poco
@@ -175,7 +176,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Can_Get_Over_16_Projections()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             var key = Guid.NewGuid().ToString();
 
             var poco = new Poco
@@ -240,7 +241,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Can_Get_Projection()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             var key = Guid.NewGuid().ToString();
 
             try
@@ -264,7 +265,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Can_Get_Projection_As_Poco()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             var key = Guid.NewGuid().ToString();
 
             var poco = new Poco
@@ -310,7 +311,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Can_Get_Projections()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             var key = Guid.NewGuid().ToString();
 
             try
@@ -334,7 +335,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Get_returns_cas()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             var key = Guid.NewGuid().ToString();
 
             try
@@ -353,7 +354,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Can_GetAndTouch_Do_Something_Fabulous()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             var key = Guid.NewGuid().ToString();
 
             try
@@ -373,7 +374,7 @@ namespace Couchbase.IntegrationTests
         public async Task Test()
         {
             var id1 = "foo2";
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
 
             try
             {
@@ -386,7 +387,7 @@ namespace Couchbase.IntegrationTests
 
                 var getResult2 =
                     await collection.GetAsync(id1, getOptions => getOptions.Expiry()).ConfigureAwait(false);
-                var expiry = getResult2.Expiry;
+                var expiry = getResult2.ExpiryTime;
 
                 var value2 = getResult2.ContentAs<int>();
                 Assert.Equal(5, value2);
@@ -397,10 +398,32 @@ namespace Couchbase.IntegrationTests
             }
         }
 
+        [Fact(Skip="Inconsistent results on some machines.")]
+        public async Task Test_ExpiryTime()
+        {
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
+            var key = nameof(Test_ExpiryTime_Default_Infinite_TTL);
+
+            try
+            {
+                await collection.InsertAsync(key, Person.Create(), options=>options.Expiry(TimeSpan.FromSeconds(30))).ConfigureAwait(false);
+                var result = await collection.GetAsync(key, options => options.Expiry()).ConfigureAwait(false);
+                var content = result.ExpiryTime;
+
+                //Estimate the time comparision by range
+                Assert.True(content < DateTime.Now.Add(TimeSpan.FromSeconds(30)).ToLocalTime());
+                Assert.True(content > DateTime.Now.Add(TimeSpan.FromSeconds(-30)).ToLocalTime());
+            }
+            finally
+            {
+                await collection.RemoveAsync(key).ConfigureAwait(false);
+            }
+        }
+
         [Fact]
         public async Task Test_ExpiryTime_Default_Infinite_TTL()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             var key = nameof(Test_ExpiryTime_Default_Infinite_TTL);
 
             try
@@ -419,7 +442,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Test_ExpiryTime_30_Seconds_TTL()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             var key = Guid.NewGuid().ToString();
 
             try
@@ -438,7 +461,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Test_ExpiryTime_Null_When_Expiry_Flag_Not_Set()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             var key = Guid.NewGuid().ToString();
 
             try
@@ -454,13 +477,39 @@ namespace Couchbase.IntegrationTests
             }
         }
 
+        [Fact]
+        public async Task Test_ExpiryTime_With_RawBinaryTranscoder()
+        {
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
+            var key = Guid.NewGuid().ToString();
+
+            try
+            {
+                var data = Enumerable.Range(1, 128).Select(p => (byte) p).ToArray();
+                var transcoder = new RawBinaryTranscoder();
+
+                await collection.InsertAsync(key, data, options => options.Expiry(TimeSpan.FromSeconds(30)).Transcoder(transcoder))
+                    .ConfigureAwait(false);
+                var result = await collection.GetAsync(key, options => options.Expiry().Transcoder(transcoder))
+                    .ConfigureAwait(false);
+
+                var content = result.ExpiryTime;
+                Assert.NotNull(content);
+                Assert.Equal(data, result.ContentAs<byte[]>());
+            }
+            finally
+            {
+                await collection.RemoveAsync(key).ConfigureAwait(false);
+            }
+        }
+
         [Theory]
         [InlineData(null)]
         [InlineData("")]
         public async Task GetEmptyDoc_LegacyTranscoder(string content)
         {
             const string id = nameof(GetEmptyDoc_LegacyTranscoder);
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             var transcoder = new LegacyTranscoder(new DefaultSerializer());
 
             try

@@ -1,3 +1,4 @@
+using System;
 using System.Threading.Tasks;
 using Couchbase.Analytics;
 using Couchbase.Query;
@@ -9,8 +10,6 @@ namespace Couchbase.KeyValue
     /// <remarks>Volatile</remarks>
     public interface IScope
     {
-        string Id { get; }
-
         string Name { get; }
 
         /// <summary>
@@ -21,6 +20,8 @@ namespace Couchbase.KeyValue
         ICouchbaseCollection this[string name] { get; }
 
         ICouchbaseCollection Collection(string collectionName);
+
+        ValueTask<ICouchbaseCollection> CollectionAsync(string collectionName);
 
         /// <summary>
         /// Scope level querying of collections.

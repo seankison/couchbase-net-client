@@ -19,7 +19,7 @@ namespace Couchbase.IntegrationTests
 
             // This test may be invalid.  It is throwing BucketNotFoundException here, and that is appropriate,. as far as I can tell.
             var bucket = await cluster.BucketAsync("doesnotexist").ConfigureAwait(false);
-            var defaultCollection = bucket.DefaultCollection();
+            var defaultCollection = await bucket.DefaultCollectionAsync();
 
            // We would have to inject a bootstrapping error *after* BucketAsync succeeds, to continue with the test.
 
@@ -69,7 +69,7 @@ namespace Couchbase.IntegrationTests
            }).ConfigureAwait(false);
            await Assert.ThrowsAsync<AuthenticationFailureException>(async () =>
            {
-               await ThrowAuthenticationException(() => defaultCollection.UnlockAsync<dynamic>(id, 0)).ConfigureAwait(false);
+               await ThrowAuthenticationException(() => defaultCollection.UnlockAsync(id, 0)).ConfigureAwait(false);
            }).ConfigureAwait(false);
            await Assert.ThrowsAsync<AuthenticationFailureException>(async () =>
            {

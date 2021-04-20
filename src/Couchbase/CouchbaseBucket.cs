@@ -33,8 +33,8 @@ namespace Couchbase
 
         internal CouchbaseBucket(string name, ClusterContext context, IScopeFactory scopeFactory, IRetryOrchestrator retryOrchestrator,
             IVBucketKeyMapperFactory vBucketKeyMapperFactory, ILogger<CouchbaseBucket> logger, IRedactor redactor, IBootstrapperFactory bootstrapperFactory,
-            IRequestTracer tracer)
-            : base(name, context, scopeFactory, retryOrchestrator, logger, redactor, bootstrapperFactory, tracer)
+            IRequestTracer tracer, IOperationConfigurator operationConfigurator, IRetryStrategy retryStrategy)
+            : base(name, context, scopeFactory, retryOrchestrator, logger, redactor, bootstrapperFactory, tracer, operationConfigurator, retryStrategy)
         {
             _vBucketKeyMapperFactory = vBucketKeyMapperFactory ?? throw new ArgumentNullException(nameof(vBucketKeyMapperFactory));
 
@@ -63,12 +63,7 @@ namespace Couchbase
             {
                 Logger.LogDebug("Fetching scope {scopeName}", Redactor.UserData(scopeName));
 
-                if (Scopes.TryGetValue(scopeName, out var scope))
-                {
-                    return scope;
-                }
-
-                throw new ScopeNotFoundException(scopeName);
+                return Scopes.GetOrAdd(scopeName, s => _scopeFactory.CreateScope(s, this));
             }
         }
 
@@ -172,6 +167,7 @@ namespace Couchbase
             query.OnError(options.OnErrorValue == ViewErrorMode.Stop);
             query.Timeout = options.TimeoutValue ?? Context.ClusterOptions.ViewTimeout;
             query.Serializer = options.SerializerValue;
+            query.RetryStrategy = options.RetryStrategyValue ?? RetryStrategy;
 
             if (options.ViewOrderingValue == ViewOrdering.Decesending)
             {
@@ -201,50 +197,35 @@ namespace Couchbase
             return await RetryOrchestrator.RetryAsync(Func, query).ConfigureAwait(false);
         }
 
-        internal override Task SendAsync(IOperation op, CancellationToken token = default)
+        internal override async Task SendAsync(IOperation op, CancellationTokenPair tokenPair = default)
         {
-            if (KeyMapper == null)
-            {
-                throw new InvalidOperationException($"Bucket {Name} is not bootstrapped.");
-            }
+            if (KeyMapper == null) ThrowHelper.ThrowInvalidOperationException($"Bucket {Name} is not bootstrapped.");
 
-            var vBucket = (VBucket) KeyMapper.MapKey(op.Key);
-            var endPoint = op.ReplicaIdx > 0 ?
-                vBucket.LocateReplica(op.ReplicaIdx) :
-                vBucket.LocatePrimary();
-
-            op.VBucketId = vBucket.Index;
-
-            if (Nodes.TryGet(endPoint!, out var clusterNode))
+            if (op.RequiresVBucketId)
             {
-                return clusterNode.SendAsync(op, token);
-            }
-            else
-            {
-                if (endPoint != null)
+                var vBucket = (VBucket) KeyMapper.MapKey(op.Key);
+
+                var endPoint = op.ReplicaIdx != null
+                    ? vBucket.LocateReplica(op.ReplicaIdx.GetValueOrDefault())
+                    : vBucket.LocatePrimary();
+
+                op.VBucketId = vBucket.Index;
+
+                if (Nodes.TryGet(endPoint!, out var clusterNode))
                 {
-                    throw new NodeNotAvailableException(
-                        $"Cannot find a Couchbase Server node for {endPoint}.");
+                    await clusterNode.SendAsync(op, tokenPair);
+                    return;
                 }
-                else
-                {
-                    throw new NullReferenceException($"IPEndPoint is null for key {op.Key}.");
-                }
-            }
-        }
 
-        /// <summary>
-        /// Currently used to support integration tests, this method uses a random cluster node to refresh
-        /// the manifest after scope/collection changes using the management APIs.
-        /// </summary>
-        internal async Task RefreshManifestAsync()
-        {
-            if (Context.SupportsCollections)
-            {
-                Manifest = await Nodes.GetRandom().GetManifest().ConfigureAwait(false);
-
-                LoadManifest();
+                throw new NodeNotAvailableException(
+                    $"Cannot find a Couchbase Server node for {endPoint}.");
             }
+
+            var node = Nodes.GetRandom();
+            if (node == null)
+                throw new NodeNotAvailableException(
+                    $"Cannot find a Couchbase Server node for executing {op.GetType()}.");
+            await node.SendAsync(op, tokenPair);
         }
 
         internal override async Task BootstrapAsync(IClusterNode node)
@@ -258,11 +239,18 @@ namespace Couchbase
                     Manifest = await node.GetManifest().ConfigureAwait(false);
                 }
 
-                //we still need to add a default collection
-                LoadManifest();
-
                 BucketConfig = await node.GetClusterMap().ConfigureAwait(false);
-                BucketConfig.NetworkResolution = Context.ClusterOptions.NetworkResolution;
+                if (Context.ClusterOptions.HasNetworkResolution)
+                {
+                    //Network resolution determined at the GCCCP level
+                    BucketConfig.NetworkResolution = Context.ClusterOptions.EffectiveNetworkResolution;
+                }
+                else
+                {
+                    //A non-GCCCP cluster
+                    BucketConfig.SetEffectiveNetworkResolution(node.BootstrapEndpoint, Context.ClusterOptions);
+                }
+
                 KeyMapper = await _vBucketKeyMapperFactory.CreateAsync(BucketConfig).ConfigureAwait(false);
 
                 Nodes.Add(node);
@@ -273,8 +261,7 @@ namespace Couchbase
             {
                 if (e is CouchbaseException ce)
                 {
-                    if (ce.Context is KeyValueErrorContext ctx
-                        && ctx.Status == ResponseStatus.NotSupported)
+                    if (ce.Context is KeyValueErrorContext {Status: ResponseStatus.NotSupported})
                     {
                         throw new NotSupportedException();
                     }

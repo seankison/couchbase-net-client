@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Couchbase.Core.Diagnostics.Tracing;
 using Couchbase.Core.IO.Connections;
+using Couchbase.Core.IO.Operations;
 using Couchbase.Core.IO.Transcoders;
 using Couchbase.Core.Logging;
 using Microsoft.Extensions.Logging;
@@ -31,22 +32,21 @@ namespace Couchbase.Core.IO.Authentication
         /// <summary>
         /// Initializes a new instance of the <see cref="ScramShaMechanism"/> class.
         /// </summary>
-        /// <param name="transcoder">The transcoder.</param>
         /// <param name="mechanismType">Type of the mechanism.</param>
         /// <param name="password">The password for the user.</param>
         /// <param name="username">The user's name to authenticate.</param>
         /// <param name="logger">The configured logger.</param>
         /// <param name="tracer">The request tracer.</param>
+        /// <param name="operationConfigurator">Operation configurator.</param>
         /// <exception cref="System.ArgumentNullException"></exception>
-        public ScramShaMechanism(ITypeTranscoder transcoder,
-            MechanismType mechanismType,
+        public ScramShaMechanism(MechanismType mechanismType,
             string password,
             string username,
             ILogger<ScramShaMechanism> logger,
-            IRequestTracer tracer)
-        : base(tracer)
+            IRequestTracer tracer,
+            IOperationConfigurator operationConfigurator)
+        : base(tracer, operationConfigurator)
         {
-            Transcoder = transcoder ?? throw new ArgumentNullException(nameof(transcoder));
             MechanismType = mechanismType;
             _username = username ?? throw new ArgumentNullException(nameof(username));
             _password = password ?? throw new ArgumentNullException(nameof(password));
@@ -64,13 +64,14 @@ namespace Couchbase.Core.IO.Authentication
 
         public override async Task AuthenticateAsync(IConnection connection, CancellationToken cancellationToken = default)
         {
+            using var rootSpan = RootSpan(OuterRequestSpans.ServiceSpan.Internal.AuthenticateScramSha);
             try
             {
-                using var rootSpan = Tracer.RootSpan(CouchbaseTags.Service, OperationNames.AuthenticateScramSha);
                 var clientFirstMessage = "n,,n=" + _username + ",r=" + ClientNonce;
                 var clientFirstMessageBare = clientFirstMessage.Substring(3);
 
-                var serverFirstResult = await SaslStart(connection, clientFirstMessage, rootSpan, cancellationToken).ConfigureAwait(false);
+                var serverFirstResult = await SaslStart(connection, clientFirstMessage, rootSpan, cancellationToken)
+                    .ConfigureAwait(false);
                 var serverFirstMessage = DecodeResponse(serverFirstResult);
 
                 var serverNonce = serverFirstMessage["r"];
@@ -84,9 +85,11 @@ namespace Couchbase.Core.IO.Authentication
                 //build the final client message
                 var clientFinalMessageNoProof = "c=biws,r=" + serverNonce;
                 var authMessage = $"{clientFirstMessageBare},{serverFirstResult},{clientFinalMessageNoProof}";
-                var clientFinalMessage = clientFinalMessageNoProof + ",p=" + Convert.ToBase64String(GetClientProof(saltedPassword, authMessage));
+                var clientFinalMessage = clientFinalMessageNoProof + ",p=" +
+                                         Convert.ToBase64String(GetClientProof(saltedPassword, authMessage));
 
-                var finalServerResponse = await SaslStep(connection, clientFinalMessage, rootSpan, cancellationToken).ConfigureAwait(false);
+                var finalServerResponse = await SaslStep(connection, clientFinalMessage, rootSpan, cancellationToken)
+                    .ConfigureAwait(false);
                 Logger.LogInformation(LoggingEvents.AuthenticationEvent, finalServerResponse);
             }
             catch (AuthenticationFailureException e)
@@ -155,23 +158,21 @@ namespace Couchbase.Core.IO.Authentication
             var storedKey = ComputeDigest(clientKey);
             var clientSignature = ComputeHash(storedKey, authMessage);
 
-            return XOR(clientKey, clientSignature);
+            XorInPlace(clientKey, clientSignature);
+            return clientKey;
         }
 
         /// <summary>
-        /// XOR's the specified result.
+        /// XOR's the specified result with an operand, updating the result.
         /// </summary>
-        /// <param name="result">The result.</param>
-        /// <param name="other">The other.</param>
-        /// <returns></returns>
-        internal byte[] XOR(byte[] result, byte[] other)
+        /// <param name="result">The input and result.</param>
+        /// <param name="other">The operand.</param>
+        internal void XorInPlace(Span<byte> result, ReadOnlySpan<byte> other)
         {
-            var buffer = new byte[result.Length];
             for (var i = 0; i < result.Length; ++i)
             {
-                buffer[i] = (byte)(result[i] ^ other[i]);
+                result[i] ^= other[i];
             }
-            return buffer;
         }
 
         /// <summary>
@@ -181,11 +182,28 @@ namespace Couchbase.Core.IO.Authentication
         internal string GenerateClientNonce()
         {
             const int nonceLength = 21;
+
+#if !SPAN_SUPPORT
             var bytes = new byte[nonceLength];
+#else
+            Span<byte> bytes = stackalloc byte[nonceLength];
+#endif
+
             using var rng = RandomNumberGenerator.Create();
             rng.GetBytes(bytes);
             return Convert.ToBase64String(bytes);
         }
+
+        #region tracing
+        private IRequestSpan RootSpan(string operation)
+        {
+            var span = Tracer.RequestSpan(operation);
+            span.SetAttribute(OuterRequestSpans.Attributes.System.Key, OuterRequestSpans.Attributes.System.Value);
+            span.SetAttribute(OuterRequestSpans.Attributes.Service, nameof(OuterRequestSpans.ServiceSpan.Kv).ToLowerInvariant());
+            span.SetAttribute(OuterRequestSpans.Attributes.Operation, operation);
+            return span;
+        }
+        #endregion
 
         #region [ License information          ]
 

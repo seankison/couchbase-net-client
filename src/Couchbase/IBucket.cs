@@ -22,11 +22,37 @@ namespace Couchbase
 
         IScope Scope(string scopeName);
 
+        /// <summary>
+        /// Gets a scope from  the bucket by name.
+        /// </summary>
+        /// <param name="scopeName">The name of the scope to fetch.</param>
+        /// <returns>A scope that belongs to the bucket.</returns>
+        ValueTask<IScope> ScopeAsync(string scopeName);
+
         IScope DefaultScope();
+
+        /// <summary>
+        /// Gets the default scope for the bucket.
+        /// </summary>
+        /// <returns>The default scope.</returns>
+        ValueTask<IScope> DefaultScopeAsync();
 
         ICouchbaseCollection DefaultCollection();
 
+        /// <summary>
+        /// Gets the default collection for the bucket.
+        /// </summary>
+        /// <returns>The default collection.</returns>
+        ValueTask<ICouchbaseCollection> DefaultCollectionAsync();
+
         ICouchbaseCollection Collection(string collectionName);
+
+        /// <summary>
+        /// Gets a collection from the default scope of the bucket by name.
+        /// </summary>
+        /// <param name="collectionName">The name of the collection to fetch.</param>
+        /// <returns>A collection that belongs to the default scope of the bucket.</returns>
+        ValueTask<ICouchbaseCollection> CollectionAsync(string collectionName);
 
         /// <summary>
         /// Execute a view query.

@@ -30,6 +30,7 @@ using Couchbase.Views;
 using DnsClient;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.ObjectPool;
 
 namespace Couchbase.Core.DI
 {
@@ -47,7 +48,7 @@ namespace Couchbase.Core.DI
             yield return (typeof(ILoggerFactory), new SingletonServiceFactory(new NullLoggerFactory()));
             yield return (typeof(ILogger<>), new SingletonGenericServiceFactory(typeof(Logger<>)));
             yield return (typeof(IRedactor), new SingletonServiceFactory(typeof(Redactor)));
-            yield return (typeof(IRequestTracer), new SingletonServiceFactory(NullRequestTracer.Instance));
+            yield return (typeof(IRequestTracer), new SingletonServiceFactory(NoopRequestTracer.Instance));
 
             yield return (typeof(ILookupClient), new TransientServiceFactory(_ => new LookupClient()));
             yield return (typeof(IDotNetDnsClient), new TransientServiceFactory(_ => new DotNetDnsClient()));
@@ -76,8 +77,8 @@ namespace Couchbase.Core.DI
             yield return (typeof(IScopeFactory), new SingletonServiceFactory(typeof(ScopeFactory)));
             yield return (typeof(ICollectionFactory), new SingletonServiceFactory(typeof(CollectionFactory)));
             yield return (typeof(IRetryOrchestrator), new SingletonServiceFactory(typeof(RetryOrchestrator)));
-            yield return (typeof(IOrphanedResponseLogger),
-                new SingletonServiceFactory(typeof(NullOrphanedResponseLogger)));
+         //   yield return (typeof(IOrphanedResponseLogger),
+          //      new SingletonServiceFactory(typeof(NullOrphanedResponseLogger)));
             yield return (typeof(IVBucketKeyMapperFactory),
                 new SingletonServiceFactory(typeof(VBucketKeyMapperFactory)));
             yield return (typeof(IVBucketFactory), new SingletonServiceFactory(typeof(VBucketFactory)));
@@ -87,7 +88,7 @@ namespace Couchbase.Core.DI
             yield return (typeof(IOperationCompressor), new SingletonServiceFactory(typeof(OperationCompressor)));
             yield return (typeof(ICompressionAlgorithm), new SingletonServiceFactory(typeof(NullCompressionAlgorithm)));
 
-            yield return (typeof(ITypeSerializer), new SingletonServiceFactory(new DefaultSerializer()));
+            yield return (typeof(ITypeSerializer), new SingletonServiceFactory(DefaultSerializer.Instance));
             yield return (typeof(IDataMapper), new SingletonServiceFactory(typeof(JsonDataMapper)));
             yield return (typeof(ITypeTranscoder), new SingletonServiceFactory(typeof(JsonTranscoder)));
 
@@ -113,6 +114,18 @@ namespace Couchbase.Core.DI
             yield return (typeof(ISaslMechanismFactory), new SingletonServiceFactory(typeof(SaslMechanismFactory)));
             yield return (typeof(IBootstrapperFactory), new SingletonServiceFactory(typeof(BootstrapperFactory)));
             yield return (typeof(IClusterVersionProvider), new SingletonServiceFactory(typeof(ClusterVersionProvider)));
+
+            yield return (typeof(ObjectPoolProvider), new SingletonServiceFactory(serviceProvider => new DefaultObjectPoolProvider
+            {
+                MaximumRetained = serviceProvider.GetRequiredService<ClusterOptions>().Tuning.MaximumRetainedOperationBuilders
+            }));
+            yield return (typeof(ObjectPool<OperationBuilder>), new SingletonServiceFactory(serviceProvider =>
+                serviceProvider.GetRequiredService<ObjectPoolProvider>().Create(
+                    new OperationBuilderPoolPolicy
+                    {
+                        MaximumOperationBuilderCapacity = serviceProvider.GetRequiredService<ClusterOptions>()
+                            .Tuning.MaximumOperationBuilderCapacity
+                    })));
         }
     }
 }

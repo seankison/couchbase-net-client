@@ -11,6 +11,7 @@ namespace Couchbase.Analytics
     {
         private TimeSpan _timeout = TimeSpan.FromMilliseconds(75000);
         private AnalyticsScanConsistency _scanConsistency = AnalyticsScanConsistency.NotBounded;
+        private IRetryStrategy _retryStrategy;
 
         public AnalyticsRequest()
         {
@@ -27,6 +28,8 @@ namespace Couchbase.Analytics
         }
 
         public bool ReadOnly { get; set; }
+        public string BucketName { get; set; }
+        public string ScopeName { get; set; }
 
         /// <summary>
         /// Gets the original analytics statement.
@@ -185,8 +188,12 @@ namespace Couchbase.Analytics
 
         public uint Attempts { get; set; }
         public bool Idempotent { get; set; }
-        public List<RetryReason> RetryReasons { get; set; } = new List<RetryReason>();
-        public IRetryStrategy RetryStrategy { get; set; } = new BestEffortRetryStrategy();
+        public List<RetryReason> RetryReasons { get; set; } = new();
+        public IRetryStrategy RetryStrategy
+        {
+            get => _retryStrategy ??= new BestEffortRetryStrategy();
+            set => _retryStrategy = value;
+        }
 
         public TimeSpan Timeout
         {

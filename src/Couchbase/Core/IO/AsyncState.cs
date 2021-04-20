@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Diagnostics;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,23 +16,32 @@ namespace Couchbase.Core.IO
     /// <summary>
     /// Represents an asynchronous Memcached request in flight.
     /// </summary>
-    internal class AsyncState
+    internal class AsyncState : IDisposable
     {
+        private static readonly Action<object?> SendResponseInternalAction = SendResponseInternal;
+
         // CompletionTask is rarely used, only to support graceful connection shutdown during pool scaling
         // So we delay initialization until it is requested.
         private volatile TaskCompletionSource<bool>? _tcs;
 
         // Used to track the completion state when there is not _tcs, so if it's requested later we can still
         // mark the task as complete before returning. This also helps with thread sync.
-        private volatile bool _isCompleted;
+        private volatile int _isCompleted;
 
-        public IPEndPoint? EndPoint { get; set; }
+        private readonly Stopwatch _stopwatch;
+
+        public EndPoint? EndPoint { get; set; }
         public IOperation Operation { get; set; }
-        public uint Opaque { get; }
-        public Timer? Timer { get; set; }
+        public uint Opaque => Operation.Opaque;
         public ulong ConnectionId { get; set; }
-        public ErrorMap? ErrorMap { get; set; }
         public string? LocalEndpoint { get; set; }
+
+        public TimeSpan TimeInFlight => _stopwatch.Elapsed;
+
+        /// <summary>
+        /// Temporary storage for response data used by SendResponse. This avoids closure related heap allocations.
+        /// </summary>
+        private SlicedMemoryOwner<byte> _response;
 
         public Task CompletionTask
         {
@@ -47,7 +57,7 @@ namespace Couchbase.Core.IO
                 var newTcs = new TaskCompletionSource<bool>();
                 Interlocked.CompareExchange(ref _tcs, newTcs, null);
 
-                if (_isCompleted)
+                if (_isCompleted == 1)
                 {
                     // Just in case we were completing at the same time we were creating the _tcs
                     _tcs.TrySetResult(true);
@@ -57,63 +67,51 @@ namespace Couchbase.Core.IO
             }
         }
 
-        public AsyncState(IOperation operation, uint opaque)
+        public AsyncState(IOperation operation)
         {
+            // ReSharper disable once ConditionIsAlwaysTrueOrFalse
             if (operation == null)
             {
                 ThrowHelper.ThrowArgumentNullException(nameof(operation));
             }
 
             Operation = operation;
-            Opaque = opaque;
+            _stopwatch = Stopwatch.StartNew();
         }
 
-        /// <summary>
-        /// Cancels the current Memcached request that is in-flight.
-        /// </summary>
-        public void Cancel(ResponseStatus status)
+        public void Complete(in SlicedMemoryOwner<byte> response)
         {
-            Timer?.Dispose();
-            Timer = null;
+            var prevCompleted = Interlocked.Exchange(ref _isCompleted, 1);
+            if (prevCompleted == 1)
+            {
+                // Operation is already completed
+                response.Dispose();
+                return;
+            }
 
-            var response = BuildErrorResponse(Opaque, status);
-
-            Operation.HandleOperationCompleted(response);
-
-            _isCompleted = true;
-            _tcs?.TrySetCanceled();
-        }
-
-        public void Complete(IMemoryOwner<byte>? response)
-        {
-            Timer?.Dispose();
-            Timer = null;
-
-            if (response == null)
+            if (response.IsEmpty)
             {
                 //this means the request never completed - assume a transport failure
-                response = BuildErrorResponse(Opaque, ResponseStatus.TransportFailure);
+                SendResponse(BuildErrorResponse(Opaque, ResponseStatus.TransportFailure));
             }
-
-            // We don't need the execution context to flow to callback execution
-            // so we can reduce heap allocations by not flowing.
-            using (ExecutionContext.SuppressFlow())
+            else
             {
-                // Run callback in a new task to avoid blocking the connection read process
-                Task.Factory.StartNew(state => Operation.HandleOperationCompleted((IMemoryOwner<byte>) state!), response);
+                SendResponse(in response);
             }
 
-            _isCompleted = true;
             _tcs?.TrySetResult(true);
         }
 
         public void Dispose()
         {
-            Timer?.Dispose();
-            Timer = null;
+            // Note: Don't dispose _response, this needs to live until the SendResponse task is executed.
+            // The SendResponse task passes dispose responsibility forward to the operation.
+
+            _isCompleted = 1;
+            _tcs?.TrySetCanceled();
         }
 
-        internal static IMemoryOwner<byte> BuildErrorResponse(uint opaque, ResponseStatus status)
+        internal static SlicedMemoryOwner<byte> BuildErrorResponse(uint opaque, ResponseStatus status)
         {
             var response = MemoryPool<byte>.Shared.RentAndSlice(24);
             var responseSpan = response.Memory.Span;
@@ -122,6 +120,43 @@ namespace Couchbase.Core.IO
             ByteConverter.FromInt16((short) status, responseSpan.Slice(HeaderOffsets.Status));
 
             return response;
+        }
+
+        private void SendResponse(in SlicedMemoryOwner<byte> response)
+        {
+            _response = response;
+
+            // We don't need the execution context to flow to callback execution
+            // so we can reduce heap allocations by not flowing.
+            using (ExecutionContext.SuppressFlow())
+            {
+                // Run callback in a new task to avoid blocking the connection read process
+                Task.Factory.StartNew(SendResponseInternalAction, this, default,
+                    TaskCreationOptions.PreferFairness | TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
+            }
+        }
+
+        /// <summary>
+        /// Used by SendResponse, using a static action reduces heap allocations.
+        /// </summary>
+        private static void SendResponseInternal(object? response)
+        {
+            var state = (AsyncState) response!;
+
+            try
+            {
+                state.Operation.HandleOperationCompleted(in state._response);
+            }
+            catch
+            {
+                // Cleanup data on error
+                state._response.Dispose();
+                throw;
+            }
+            finally
+            {
+                state._response = default;
+            }
         }
     }
 }

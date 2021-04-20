@@ -1,18 +1,20 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Linq;
 using Couchbase.Core.Exceptions;
 using Couchbase.Core.IO.Converters;
 using Couchbase.KeyValue;
 using Couchbase.Utils;
 
+#nullable enable
+
 namespace Couchbase.Core.IO.Operations.SubDocument
 {
     internal class MultiMutation<T> : OperationBase<T>, IEquatable<MultiMutation<T>>
     {
-        public MutateInBuilder<T> Builder { get; set; }
-        private readonly List<OperationSpec> _mutateCommands = new List<OperationSpec>();
+        public ReadOnlyCollection<MutateInSpec> MutateCommands { get; }
 
         public DurabilityLevel DurabilityLevel { get; set; }
 
@@ -20,7 +22,32 @@ namespace Couchbase.Core.IO.Operations.SubDocument
 
         public SubdocDocFlags DocFlags { get; set; }
 
-        public override void WriteExtras(OperationBuilder builder)
+        /// <inheritdoc />
+        public override bool IsReadOnly => false;
+
+        public MultiMutation(string key, IEnumerable<MutateInSpec> specs)
+        {
+            // ReSharper disable once ConditionIsAlwaysTrueOrFalse
+            if (specs == null)
+            {
+                ThrowHelper.ThrowArgumentNullException(nameof(specs));
+            }
+
+            Key = key;
+
+            var commands = specs.ToList();
+            for (int i = 0; i < commands.Count; i++)
+            {
+                commands[i].OriginalIndex = i;
+            }
+
+            // re-order the specs so XAttrs come first.
+            commands.Sort(OperationSpec.ByXattr);
+
+            MutateCommands = new ReadOnlyCollection<MutateInSpec>(commands);
+        }
+
+        protected override void WriteExtras(OperationBuilder builder)
         {
             if (Expires > 0)
             {
@@ -38,7 +65,7 @@ namespace Couchbase.Core.IO.Operations.SubDocument
             }
         }
 
-        public override void WriteFramingExtras(OperationBuilder builder)
+        protected override void WriteFramingExtras(OperationBuilder builder)
         {
             if (DurabilityLevel == DurabilityLevel.None)
             {
@@ -59,26 +86,13 @@ namespace Couchbase.Core.IO.Operations.SubDocument
             builder.Write(bytes);
         }
 
-        public override void WriteBody(OperationBuilder builder)
+        protected override void WriteBody(OperationBuilder builder)
         {
             using (var bufferOwner = MemoryPool<byte>.Shared.Rent(OperationSpec.MaxPathLength))
             {
                 var buffer = bufferOwner.Memory.Span;
-                foreach (var mutate in Builder)
-                {
 
-                    _mutateCommands.Add(mutate);
-                }
-
-                for (int i = 0; i < _mutateCommands.Count; i++)
-                {
-                    _mutateCommands[i].OriginalIndex = i;
-                }
-
-                // re-order the specs so XAttrs come first.
-                _mutateCommands.Sort(OperationSpec.ByXattr);
-
-                foreach (var mutate in _mutateCommands)
+                foreach (var mutate in MutateCommands)
                 {
                     builder.BeginOperationSpec(true);
 
@@ -101,13 +115,13 @@ namespace Couchbase.Core.IO.Operations.SubDocument
             if (!spec.RemoveBrackets)
             {
                 // We can serialize directly
-                Transcoder.Serializer.Serialize(builder, spec.Value);
+                Transcoder.Serializer.Serialize(builder, spec.Value!);
             }
             else
             {
                 using (var stream = MemoryStreamFactory.GetMemoryStream())
                 {
-                    Transcoder.Serializer.Serialize(stream, spec.Value);
+                    Transcoder.Serializer.Serialize(stream, spec.Value!);
 
                     ReadOnlyMemory<byte> bytes = stream.GetBuffer().AsMemory(0, (int) stream.Length);
                     bytes = bytes.StripBrackets();
@@ -117,48 +131,12 @@ namespace Couchbase.Core.IO.Operations.SubDocument
             }
         }
 
-        public override IOperationResult<T> GetResultWithValue()
-        {
-            var result = new DocumentFragment<T>(Builder);
-            try
-            {
-                result.Success = GetSuccess();
-                result.Message = GetMessage();
-                result.Status = GetResponseStatus();
-                result.Cas = Header.Cas;
-                result.Exception = Exception;
-                result.Token = MutationToken ?? DefaultMutationToken;
-                result.Value = GetCommandValues();
-
-                //clean up and set to null
-                if (!result.IsNmv())
-                {
-                    Dispose();
-                }
-            }
-            catch (Exception e)
-            {
-                result.Exception = e;
-                result.Success = false;
-                result.Status = ResponseStatus.ClientFailure;
-            }
-            finally
-            {
-                if (!result.IsNmv())
-                {
-                    Dispose();
-                }
-            }
-
-            return result;
-        }
-
-        public override void ReadExtras(ReadOnlySpan<byte> buffer)
+        protected override void ReadExtras(ReadOnlySpan<byte> buffer)
         {
             TryReadMutationToken(buffer);
         }
 
-        public IList<OperationSpec> GetCommandValues()
+        public IList<MutateInSpec> GetCommandValues()
         {
             var responseSpan = Data.Span;
             ReadExtras(responseSpan);
@@ -166,7 +144,7 @@ namespace Couchbase.Core.IO.Operations.SubDocument
             //all mutations successful
             if (responseSpan.Length == OperationHeader.Length + Header.FramingExtrasLength)
             {
-                return _mutateCommands.OrderBy(spec => spec.OriginalIndex).ToList();
+                return MutateCommands.OrderBy(spec => spec.OriginalIndex).ToList();
             }
 
             if (Header.BodyOffset > responseSpan.Length)
@@ -177,12 +155,12 @@ namespace Couchbase.Core.IO.Operations.SubDocument
             responseSpan = responseSpan.Slice(Header.BodyOffset);
 
             //some commands return nothing - so return back an empty list
-            if (responseSpan.Length == 0) return new List<OperationSpec>();
+            if (responseSpan.Length == 0) return new List<MutateInSpec>();
 
             for (;;)
             {
                 var index = responseSpan[0];
-                var command = _mutateCommands[index];
+                var command = MutateCommands[index];
                 command.Status = (ResponseStatus) ByteConverter.ToUInt16(responseSpan.Slice(1));
 
                 //if success read value and loop to next result - otherwise terminate loop here
@@ -206,35 +184,10 @@ namespace Couchbase.Core.IO.Operations.SubDocument
                 if (responseSpan.Length <= 0) break;
             }
 
-            return _mutateCommands.OrderBy(spec => spec.OriginalIndex).ToList();
+            return MutateCommands.OrderBy(spec => spec.OriginalIndex).ToList();
         }
 
         public override OpCode OpCode => OpCode.SubMultiMutation;
-
-        /// <summary>
-        /// Clones this instance.
-        /// </summary>
-        /// <returns></returns>
-        public override IOperation Clone()
-        {
-            return new MultiMutation<T>
-            {
-                Attempts = Attempts,
-                Cas = Cas,
-                CreationTime = CreationTime,
-                LastConfigRevisionTried = LastConfigRevisionTried,
-                BucketName = BucketName,
-                ErrorCode = ErrorCode,
-                Expires = Expires
-            };
-        }
-
-        /// <inheritdoc />
-        public override void Reset()
-        {
-            base.Reset();
-            _mutateCommands.Clear();
-        }
 
         /// <summary>
         /// Indicates whether the current object is equal to another object of the same type.
@@ -243,11 +196,11 @@ namespace Couchbase.Core.IO.Operations.SubDocument
         /// <returns>
         /// true if the current object is equal to the <paramref name="other" /> parameter; otherwise, false.
         /// </returns>
-        public bool Equals(MultiMutation<T> other)
+        public bool Equals(MultiMutation<T>? other)
         {
             if (other == null) return false;
             if (Cas == other.Cas &&
-                Builder.Equals(other.Builder) &&
+                MutateCommands.Equals(other.MutateCommands) &&
                 Key == other.Key)
             {
                 return true;

@@ -86,6 +86,11 @@ namespace Couchbase.Core.IO.Transcoders
         /// <returns></returns>
         protected byte[] DecodeBinary(ReadOnlySpan<byte> buffer)
         {
+            if (buffer.Length == 0)
+            {
+                return Array.Empty<byte>();
+            }
+
             var temp = new byte[buffer.Length];
             buffer.CopyTo(temp.AsSpan());
             return temp;
@@ -94,7 +99,7 @@ namespace Couchbase.Core.IO.Transcoders
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         protected void WriteHelper(Stream stream, ReadOnlySpan<byte> buffer)
         {
-#if NETCOREAPP2_1 || NETCOREAPP3_0 || NETSTANDARD2_1
+#if SPAN_SUPPORT
             stream.Write(buffer);
 #else
             var array = ArrayPool<byte>.Shared.Rent(buffer.Length);

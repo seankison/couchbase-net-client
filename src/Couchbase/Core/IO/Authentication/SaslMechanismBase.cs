@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Threading;
 using System.Threading.Tasks;
 using Couchbase.Core.Diagnostics.Tracing;
@@ -7,6 +6,8 @@ using Couchbase.Core.IO.Connections;
 using Couchbase.Core.IO.Operations;
 using Couchbase.Core.IO.Operations.Authentication;
 using Couchbase.Core.IO.Transcoders;
+using Couchbase.Core.Retry;
+using Couchbase.KeyValue;
 using Couchbase.Utils;
 using Microsoft.Extensions.Logging;
 
@@ -21,11 +22,12 @@ namespace Couchbase.Core.IO.Authentication
     {
         public IRequestTracer Tracer { get; }
         protected ILogger? Logger;
-        protected ITypeTranscoder? Transcoder;
         private TimeSpan Timeout { get; set; } = TimeSpan.FromMilliseconds(2500);
+        protected readonly IOperationConfigurator OperationConfigurator;
 
-        protected SaslMechanismBase(IRequestTracer tracer)
+        protected SaslMechanismBase(IRequestTracer tracer, IOperationConfigurator operationConfigurator)
         {
+            OperationConfigurator = operationConfigurator;
             Tracer = tracer;
         }
 
@@ -37,42 +39,42 @@ namespace Couchbase.Core.IO.Authentication
         public abstract Task AuthenticateAsync(IConnection connection,
             CancellationToken cancellationToken = default);
 
-        protected async Task<string> SaslStart(IConnection connection,  string message, IInternalSpan span, CancellationToken token)
+        protected async Task<string> SaslStart(IConnection connection,  string message, IRequestSpan span, CancellationToken token)
         {
-            using var childSpan = Tracer.InternalSpan(OperationNames.SaslStart, span);
+            using var childSpan = span.ChildSpan(OuterRequestSpans.ServiceSpan.Internal.SaslStart);
             using var authOp = new SaslStart
             {
                 Key = MechanismType.GetDescription(),
                 Content = message,
-                Transcoder = Transcoder,
                 Timeout = Timeout,
                 Span = childSpan
             };
+            OperationConfigurator.Configure(authOp, SaslOptions.Instance);
             return await SendAsync(authOp, connection, token).ConfigureAwait(false);
         }
 
-        protected async Task<string> SaslStep(IConnection connection, string message, IInternalSpan span, CancellationToken token)
+        protected async Task<string> SaslStep(IConnection connection, string message, IRequestSpan span, CancellationToken token)
         {
-            using var childSpan = Tracer.InternalSpan(OperationNames.SaslStep, span);
+            using var childSpan = span.ChildSpan(OuterRequestSpans.ServiceSpan.Internal.SaslStep);
             using var op = new SaslStep()
             {
                 Key = "SCRAM-SHA1",//MechanismType.GetDescription(),
                 Content = message,
-                Transcoder = Transcoder,
                 Timeout = Timeout,
                 Span = childSpan,
             };
+            OperationConfigurator.Configure(op, SaslOptions.Instance);
             return await SendAsync(op, connection, token).ConfigureAwait(false);
         }
 
-        protected async Task<string> SaslList(IConnection connection, IInternalSpan span, CancellationToken token)
+        protected async Task<string> SaslList(IConnection connection, IRequestSpan span, CancellationToken token)
         {
             using var op = new SaslList()
             {
-                Transcoder = Transcoder,
                 Timeout = Timeout,
                 Span = span,
             };
+            OperationConfigurator.Configure(op, SaslOptions.Instance);
             return await SendAsync(op, connection, token).ConfigureAwait(false);
         }
 
@@ -80,7 +82,11 @@ namespace Couchbase.Core.IO.Authentication
         {
             await op.SendAsync(connection, cancellationToken).ConfigureAwait(false);
 
-            var status = await op.Completed.ConfigureAwait(false);
+            ResponseStatus status;
+            using (new OperationCancellationRegistration(op, CancellationTokenPair.FromInternalToken(cancellationToken)))
+            {
+                status = await op.Completed.ConfigureAwait(false);
+            }
 
             if (status != ResponseStatus.Success && status != ResponseStatus.AuthenticationContinue)
             {
@@ -88,7 +94,26 @@ namespace Couchbase.Core.IO.Authentication
                     $"Cannot authenticate the user. Reason: {status}");
             }
 
-            return op.GetResultWithValue().Content;
+            return op.GetValue()!;
+        }
+
+        /// <summary>
+        /// Provides the transcoder override for SASL operations.
+        /// </summary>
+        protected class SaslOptions : ITranscoderOverrideOptions
+        {
+            public static SaslOptions Instance { get; } = new();
+
+            public ITypeTranscoder? Transcoder { get; } = new LegacyTranscoder(); //required so that SASL strings are not JSON encoded
+
+            internal IRetryStrategy? RetryStrategyValue { get; private set; }
+            IRetryStrategy? IKeyValueOptions.RetryStrategy => RetryStrategyValue;
+
+            public SaslOptions RetryStrategy(IRetryStrategy retryStrategy)
+            {
+                RetryStrategyValue = retryStrategy;
+                return this;
+            }
         }
     }
 }

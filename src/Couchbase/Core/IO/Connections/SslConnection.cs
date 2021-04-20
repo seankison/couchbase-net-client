@@ -68,9 +68,9 @@ namespace Couchbase.Core.IO.Connections
         }
 
         /// <inheritdoc />
-        public Task SendAsync(ReadOnlyMemory<byte> request, IOperation operation,
-            ErrorMap? errorMap = null) =>
-            _multiplexingConnection.SendAsync(request, operation, errorMap);
+        public ValueTask SendAsync(ReadOnlyMemory<byte> request, IOperation operation,
+            CancellationToken cancellationToken = default) =>
+            _multiplexingConnection.SendAsync(request, operation, cancellationToken);
 
         /// <inheritdoc />
         public void Dispose()
@@ -82,7 +82,7 @@ namespace Couchbase.Core.IO.Connections
         public ValueTask CloseAsync(TimeSpan timeout) => _multiplexingConnection.CloseAsync(timeout);
 
         /// <inheritdoc />
-        public void AddTags(IInternalSpan span) => _multiplexingConnection.AddTags(span);
+        public void AddTags(IRequestSpan span) => _multiplexingConnection.AddTags(span);
     }
 }
 

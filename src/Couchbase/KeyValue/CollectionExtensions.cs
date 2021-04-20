@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Couchbase.Core.Compatibility;
+using Couchbase.Core.DI;
+using Couchbase.Core.IO.Serializers;
 using Couchbase.DataStructures;
 
 #nullable enable
@@ -13,7 +16,7 @@ namespace Couchbase.KeyValue
 
         public static Task<IGetResult> GetAsync(this ICouchbaseCollection collection, string id)
         {
-            return collection.GetAsync(id, new GetOptions());
+            return collection.GetAsync(id, GetOptions.Default);
         }
 
         public static Task<IGetResult> GetAsync(this ICouchbaseCollection collection, string id, Action<GetOptions> configureOptions)
@@ -64,7 +67,7 @@ namespace Couchbase.KeyValue
 
         public static Task<IExistsResult> ExistsAsync(this ICouchbaseCollection collection, string id)
         {
-            return collection.ExistsAsync(id, new ExistsOptions());
+            return collection.ExistsAsync(id, ExistsOptions.Default);
         }
 
         public static Task<IExistsResult> ExistsAsync(this ICouchbaseCollection collection, string id,
@@ -82,7 +85,7 @@ namespace Couchbase.KeyValue
 
         public static Task<IMutationResult> UpsertAsync<T>(this ICouchbaseCollection collection, string id, T content)
         {
-            return collection.UpsertAsync(id, content, new UpsertOptions());
+            return collection.UpsertAsync(id, content, UpsertOptions.Default);
         }
 
         public static Task<IMutationResult> UpsertAsync<T>(this ICouchbaseCollection collection, string id, T content,
@@ -100,7 +103,7 @@ namespace Couchbase.KeyValue
 
         public static Task<IMutationResult> InsertAsync<T>(this ICouchbaseCollection collection, string id, T content)
         {
-            return collection.InsertAsync(id, content, new InsertOptions());
+            return collection.InsertAsync(id, content, InsertOptions.Default);
         }
 
         public static Task<IMutationResult> InsertAsync<T>(this ICouchbaseCollection collection, string id, T content,
@@ -118,7 +121,7 @@ namespace Couchbase.KeyValue
 
         public static Task<IMutationResult> ReplaceAsync<T>(this ICouchbaseCollection collection, string id, T content)
         {
-            return collection.ReplaceAsync(id, content, new ReplaceOptions());
+            return collection.ReplaceAsync(id, content, ReplaceOptions.Default);
         }
 
         public static Task<IMutationResult> ReplaceAsync<T>(this ICouchbaseCollection collection, string id, T content,
@@ -136,7 +139,7 @@ namespace Couchbase.KeyValue
 
         public static Task RemoveAsync(this ICouchbaseCollection collection, string id)
         {
-            return collection.RemoveAsync(id, new RemoveOptions());
+            return collection.RemoveAsync(id, RemoveOptions.Default);
         }
 
         public static Task RemoveAsync(this ICouchbaseCollection collection, string id, Action<RemoveOptions> configureOptions)
@@ -151,11 +154,13 @@ namespace Couchbase.KeyValue
 
         #region Unlock
 
+        [Obsolete("Use overload that does not have a Type parameter T.")]
         public static Task UnlockAsync<T>(this ICouchbaseCollection collection, string id, ulong cas)
         {
-            return collection.UnlockAsync<T>(id, cas, new UnlockOptions());
+            return collection.UnlockAsync<T>(id, cas, UnlockOptions.Default);
         }
 
+        [Obsolete("Use overload that does not have a Type parameter T.")]
         public static Task UnlockAsync<T>(this ICouchbaseCollection collection, string id, ulong cas, Action<UnlockOptions> configureOptions)
         {
             var options = new UnlockOptions();
@@ -164,13 +169,26 @@ namespace Couchbase.KeyValue
             return collection.UnlockAsync<T>(id, cas, options);
         }
 
+        public static Task UnlockAsync(this ICouchbaseCollection collection, string id, ulong cas)
+        {
+            return collection.UnlockAsync(id, cas, UnlockOptions.Default);
+        }
+
+        public static Task UnlockAsync(this ICouchbaseCollection collection, string id, ulong cas, Action<UnlockOptions> configureOptions)
+        {
+            var options = new UnlockOptions();
+            configureOptions(options);
+
+            return collection.UnlockAsync(id, cas, options);
+        }
+
         #endregion
 
         #region Touch
 
         public static Task TouchAsync(this ICouchbaseCollection collection, string id, TimeSpan expiry)
         {
-            return collection.TouchAsync(id, expiry, new TouchOptions());
+            return collection.TouchAsync(id, expiry, TouchOptions.Default);
         }
 
         public static Task TouchAsync(this ICouchbaseCollection collection, string id, TimeSpan expiry,
@@ -188,7 +206,7 @@ namespace Couchbase.KeyValue
 
         public static Task<IGetResult> GetAndTouchAsync(this ICouchbaseCollection collection, string id, TimeSpan expiry)
         {
-            return collection.GetAndTouchAsync(id, expiry, new GetAndTouchOptions());
+            return collection.GetAndTouchAsync(id, expiry, GetAndTouchOptions.Default);
         }
 
         public static Task<IGetResult> GetAndTouchAsync(this ICouchbaseCollection collection, string id, TimeSpan expiry,
@@ -206,7 +224,7 @@ namespace Couchbase.KeyValue
 
         public static Task<IGetResult> GetAndLockAsync(this ICouchbaseCollection collection, string id, TimeSpan expiry)
         {
-            return collection.GetAndLockAsync(id, expiry, new GetAndLockOptions());
+            return collection.GetAndLockAsync(id, expiry, GetAndLockOptions.Default);
         }
 
         public static Task<IGetResult> GetAndLockAsync(this ICouchbaseCollection collection, string id, TimeSpan expiry,
@@ -228,7 +246,7 @@ namespace Couchbase.KeyValue
             var builder = new LookupInSpecBuilder();
             configureBuilder(builder);
 
-            return collection.LookupInAsync(id, builder.Specs, new LookupInOptions());
+            return collection.LookupInAsync(id, builder.Specs, LookupInOptions.Default);
         }
 
         public static Task<ILookupInResult> LookupInAsync(this ICouchbaseCollection collection, string id,
@@ -244,7 +262,7 @@ namespace Couchbase.KeyValue
         }
 
         public static Task<ILookupInResult> LookupInAsync(this ICouchbaseCollection collection, string id,
-            Action<LookupInSpecBuilder> configureBuilder, LookupInOptions options)
+            Action<LookupInSpecBuilder> configureBuilder, LookupInOptions? options)
         {
             var lookupInSpec = new LookupInSpecBuilder();
             configureBuilder(lookupInSpec);
@@ -255,7 +273,7 @@ namespace Couchbase.KeyValue
         public static Task<ILookupInResult> LookupInAsync(this ICouchbaseCollection collection, string id,
             IEnumerable<LookupInSpec> specs)
         {
-            return collection.LookupInAsync(id, specs, new LookupInOptions());
+            return collection.LookupInAsync(id, specs, LookupInOptions.Default);
         }
 
         public static Task<ILookupInResult> LookupInAsync(this ICouchbaseCollection collection, string id,
@@ -269,6 +287,35 @@ namespace Couchbase.KeyValue
 
         #endregion
 
+        #region LookupIn Typed
+
+        [InterfaceStability(Level.Volatile)]
+        public static Task<ILookupInResult<TDocument>> LookupInAsync<TDocument>(this ICouchbaseCollection collection,
+            string id, Action<LookupInSpecBuilder<TDocument>> configureBuilder,
+            Action<LookupInOptions> configureOptions)
+        {
+            var options = new LookupInOptions();
+            configureOptions(options);
+
+            return collection.LookupInAsync(id, configureBuilder, options);
+        }
+
+        [InterfaceStability(Level.Volatile)]
+        public static async Task<ILookupInResult<TDocument>> LookupInAsync<TDocument>(this ICouchbaseCollection collection,
+            string id, Action<LookupInSpecBuilder<TDocument>> configureBuilder, LookupInOptions? options = null)
+        {
+            var serializer = options?.SerializerValue ??
+                             collection.Scope.Bucket.Cluster.ClusterServices.GetRequiredService<ITypeSerializer>();
+
+            var specBuilder = new LookupInSpecBuilder<TDocument>(serializer);
+            configureBuilder(specBuilder);
+
+            return new LookupInResult<TDocument>(await collection.LookupInAsync(id, specBuilder.Specs, options)
+                .ConfigureAwait(false));
+        }
+
+        #endregion
+
         #region MutateIn
 
         public static Task<IMutateInResult> MutateInAsync(this ICouchbaseCollection collection, string id,
@@ -277,7 +324,7 @@ namespace Couchbase.KeyValue
             var builder = new MutateInSpecBuilder();
             configureBuilder(builder);
 
-            return collection.MutateInAsync(id, builder.Specs, new MutateInOptions());
+            return collection.MutateInAsync(id, builder.Specs, MutateInOptions.Default);
         }
 
         public static Task<IMutateInResult> MutateInAsync(this ICouchbaseCollection collection, string id,
@@ -293,7 +340,7 @@ namespace Couchbase.KeyValue
         }
 
         public static Task<IMutateInResult> MutateInAsync(this ICouchbaseCollection collection, string id,
-            Action<MutateInSpecBuilder> configureBuilder, MutateInOptions options)
+            Action<MutateInSpecBuilder> configureBuilder, MutateInOptions? options)
         {
             var mutateInSpec = new MutateInSpecBuilder();
             configureBuilder(mutateInSpec);
@@ -304,7 +351,7 @@ namespace Couchbase.KeyValue
         public static Task<IMutateInResult> MutateInAsync(this ICouchbaseCollection collection, string id,
             IEnumerable<MutateInSpec> specs)
         {
-            return collection.MutateInAsync(id, specs, new MutateInOptions());
+            return collection.MutateInAsync(id, specs, MutateInOptions.Default);
         }
 
         public static Task<IMutateInResult> MutateInAsync(this ICouchbaseCollection collection, string id,
@@ -314,6 +361,35 @@ namespace Couchbase.KeyValue
             configureOptions(options);
 
             return collection.MutateInAsync(id, specs, options);
+        }
+
+        #endregion
+
+        #region MutateIn Typed
+
+        [InterfaceStability(Level.Volatile)]
+        public static Task<IMutateInResult<TDocument>> MutateInAsync<TDocument>(this ICouchbaseCollection collection,
+            string id, Action<MutateInSpecBuilder<TDocument>> configureBuilder, Action<MutateInOptions> configureOptions)
+        {
+            var options = new MutateInOptions();
+            configureOptions(options);
+
+            return collection.MutateInAsync(id, configureBuilder, options);
+        }
+
+        [InterfaceStability(Level.Volatile)]
+        public static async Task<IMutateInResult<TDocument>> MutateInAsync<TDocument>(
+            this ICouchbaseCollection collection, string id,  Action<MutateInSpecBuilder<TDocument>> configureBuilder,
+            MutateInOptions? options = null)
+        {
+            var serializer = options?.SerializerValue ??
+                             collection.Scope.Bucket.Cluster.ClusterServices.GetRequiredService<ITypeSerializer>();
+
+            var mutateInSpec = new MutateInSpecBuilder<TDocument>(serializer);
+            configureBuilder(mutateInSpec);
+
+            return new MutateInResult<TDocument>(
+                await collection.MutateInAsync(id, mutateInSpec.Specs, options).ConfigureAwait(false));
         }
 
         #endregion

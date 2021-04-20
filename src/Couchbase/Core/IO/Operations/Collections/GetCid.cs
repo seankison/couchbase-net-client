@@ -2,13 +2,18 @@ using System;
 
 namespace Couchbase.Core.IO.Operations.Collections
 {
-    internal class GetCid : OperationBase<uint?>
+    internal class GetCid : OperationBase<string>
     {
+        public override bool RequiresVBucketId => false;
+
         public override OpCode OpCode => OpCode.GetCidByName;
 
-        public override bool Idempotent { get; } = true;
+        public override string GetValue()
+        {
+            throw new NotImplementedException("Use GetValueAsUint() instead for GetCid result.");
+        }
 
-        public override uint? GetValue()
+        public uint? GetValueAsUint()
         {
             if (Data.Length > 0)
             {
@@ -27,12 +32,7 @@ namespace Couchbase.Core.IO.Operations.Collections
 
             return 0u;
         }
-
-        public override void WriteExtras(OperationBuilder builder)
-        {
-        }
-
-        public override void WriteBody(OperationBuilder builder)
+        protected override void WriteExtras(OperationBuilder builder)
         {
         }
     }

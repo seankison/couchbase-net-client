@@ -24,6 +24,7 @@ using Couchbase.Management.Collections;
 using Couchbase.Management.Views;
 using Couchbase.Views;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.ObjectPool;
 using Moq;
 using Xunit;
 
@@ -36,7 +37,7 @@ namespace Couchbase.UnitTests.KeyValue
         {
             var collection = CreateTestCollection();
 
-            Assert.ThrowsAsync<TimeoutException>(async () => await collection.GetAsync("key", options =>
+            Assert.ThrowsAsync<Couchbase.Core.Exceptions.TimeoutException>(async () => await collection.GetAsync("key", options =>
             {
                 options.Timeout(TimeSpan.FromMilliseconds(1d));
             }));
@@ -69,7 +70,7 @@ namespace Couchbase.UnitTests.KeyValue
         [InlineData(ResponseStatus.ValueTooLarge, typeof(ValueToolargeException))]
         [InlineData(ResponseStatus.InvalidArguments, typeof(InvalidArgumentException))]
         [InlineData(ResponseStatus.TemporaryFailure, typeof(TemporaryFailureException))]
-        [InlineData(ResponseStatus.OperationTimeout, typeof(TimeoutException))]
+        [InlineData(ResponseStatus.OperationTimeout, typeof(Couchbase.Core.Exceptions.TimeoutException))]
         [InlineData(ResponseStatus.Locked, typeof(DocumentLockedException))]
         //durability errors
         [InlineData(ResponseStatus.DurabilityInvalidLevel, typeof(DurabilityLevelNotAvailableException))]
@@ -197,8 +198,11 @@ namespace Couchbase.UnitTests.KeyValue
             public FakeBucket(params ResponseStatus[] statuses)
                 : base(BucketName, new ClusterContext(), new Mock<IScopeFactory>().Object,
                     CreateRetryOrchestrator(), new Mock<ILogger>().Object, new Mock<IRedactor>().Object,
-                    new Mock<IBootstrapperFactory>().Object, NullRequestTracer.Instance)
-            {
+                    new Mock<IBootstrapperFactory>().Object,
+                    NoopRequestTracer.Instance,
+                    new Mock<IOperationConfigurator>().Object,
+                    new BestEffortRetryStrategy())
+                    {
                 foreach (var responseStatus in statuses) _statuses.Enqueue(responseStatus);
             }
 
@@ -206,7 +210,7 @@ namespace Couchbase.UnitTests.KeyValue
 
             public override ICouchbaseCollectionManager Collections => throw new NotImplementedException();
 
-            internal override async Task SendAsync(IOperation op, CancellationToken token = default)
+            internal override async Task SendAsync(IOperation op, CancellationTokenPair token = default)
             {
                 var mockConnectionPool = new Mock<IConnectionPool>();
 
@@ -216,14 +220,14 @@ namespace Couchbase.UnitTests.KeyValue
                     .Returns(mockConnectionPool.Object);
 
                 var clusterNode = new ClusterNode(new ClusterContext(), mockConnectionPoolFactory.Object,
-                    new Mock<ILogger<ClusterNode>>().Object, new Mock<ITypeTranscoder>().Object,
+                    new Mock<ILogger<ClusterNode>>().Object, new DefaultObjectPool<OperationBuilder>(new OperationBuilderPoolPolicy()),
                     new Mock<ICircuitBreaker>().Object,
                     new Mock<ISaslMechanismFactory>().Object,
                     new Mock<IRedactor>().Object,
                     new IPEndPoint(IPAddress.Parse("127.0.0.1"), 11210),
                     BucketType.Couchbase,
                     new NodeAdapter(),
-                    NullRequestTracer.Instance);
+                    NoopRequestTracer.Instance);
 
                 await clusterNode.ExecuteOp(op, token).ConfigureAwait(false);
 
@@ -254,7 +258,7 @@ namespace Couchbase.UnitTests.KeyValue
                 throw new NotImplementedException();
             }
 
-            public virtual Task MockableRetryAsync(IOperation operation, CancellationToken cancellationToken)
+            public virtual Task MockableRetryAsync(IOperation operation, CancellationTokenPair cancellationToken)
             {
                 // BucketBase.RetryAsync forwards to our mock IRetryOrchestrator, which forwards back to this method
                 // This allows us to mock retry behavior, while BucketBase.RetryAsync remains non-virtual for performance.
@@ -267,8 +271,8 @@ namespace Couchbase.UnitTests.KeyValue
                 var mock = new Mock<IRetryOrchestrator>();
 
                 mock
-                    .Setup(m => m.RetryAsync(It.IsAny<FakeBucket>(), It.IsAny<IOperation>(), It.IsAny<CancellationToken>()))
-                    .Returns((BucketBase bucket, IOperation op, CancellationToken ct) => ((FakeBucket) bucket).MockableRetryAsync(op, ct));
+                    .Setup(m => m.RetryAsync(It.IsAny<FakeBucket>(), It.IsAny<IOperation>(), It.IsAny<CancellationTokenPair>()))
+                    .Returns((BucketBase bucket, IOperation op, CancellationTokenPair ct) => ((FakeBucket) bucket).MockableRetryAsync(op, ct));
 
                 return mock.Object;
             }
@@ -280,10 +284,10 @@ namespace Couchbase.UnitTests.KeyValue
             mockBucket
                 .Setup(m => m.MockableRetryAsync(
                     It.Is<IOperation>(p => p.OpCode == OpCode.MultiLookup),
-                    It.IsAny<CancellationToken>()))
-                .Returns((IOperation operation, CancellationToken cancellationToken) =>
+                    It.IsAny<CancellationTokenPair>()))
+                .Returns((IOperation operation, CancellationTokenPair cancellationTokenPair) =>
                 {
-                    operation.Header = new OperationHeader
+                    ((OperationBase) operation).Header = new OperationHeader
                     {
                         Status = getResult
                     };
@@ -293,10 +297,10 @@ namespace Couchbase.UnitTests.KeyValue
 
             mockBucket.Setup(m => m.SendAsync(
                 It.IsAny<IOperation>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<CancellationTokenPair>()))
                 .Returns((IOperation operation, CancellationToken cancellationToken) =>
                 {
-                    operation.Header = new OperationHeader
+                    ((OperationBase) operation).Header = new OperationHeader
                     {
                         Status = getResult
                     };
@@ -306,10 +310,19 @@ namespace Couchbase.UnitTests.KeyValue
                     return Task.CompletedTask;
                 });
 
-            return new CouchbaseCollection(mockBucket.Object, new OperationConfigurator(new LegacyTranscoder(), Mock.Of<IOperationCompressor>()),
-                new Mock<ILogger<CouchbaseCollection>>().Object, new Mock<ILogger<GetResult>>().Object,
+            var operationConfigurator = new OperationConfigurator(new LegacyTranscoder(),
+                Mock.Of<IOperationCompressor>(),
+                new DefaultObjectPool<OperationBuilder>(new OperationBuilderPoolPolicy()),
+                new BestEffortRetryStrategy());
+
+            return new CouchbaseCollection(mockBucket.Object,
+                operationConfigurator,
+                new Mock<ILogger<CouchbaseCollection>>().Object,
+                new Mock<ILogger<GetResult>>().Object,
                 new Mock<IRedactor>().Object,
-                null, CouchbaseCollection.DefaultCollectionName, Mock.Of<IScope>(), new NullRequestTracer());
+                CouchbaseCollection.DefaultCollectionName,
+                Mock.Of<IScope>(),
+                new NoopRequestTracer());
         }
     }
 }

@@ -2,11 +2,13 @@ using System.Threading.Tasks;
 using Couchbase.Core;
 using Couchbase.Core.Exceptions;
 using Couchbase.Core.IO.Connections;
+using Couchbase.Core.IO.Operations;
 using Couchbase.Core.IO.Operations.SubDocument;
 using Couchbase.Core.IO.Serializers;
 using Couchbase.Core.IO.Transcoders;
 using Couchbase.KeyValue;
 using Couchbase.UnitTests.Helpers;
+using Microsoft.Extensions.ObjectPool;
 using Moq;
 using Xunit;
 
@@ -35,11 +37,11 @@ namespace Couchbase.UnitTests.KeyValue
                 Increment("zzz", 10, true).
                 Decrement("xxx", 5, true).Specs;
 
-            var op = new MultiMutation<byte[]>
+            var op = new MultiMutation<byte[]>("theykey", specs)
             {
-                Builder = new MutateInBuilder<byte[]>(null, null, "thekey", specs),
                 Transcoder = new JsonTranscoder()
             };
+            op.OperationBuilderPool = new DefaultObjectPool<OperationBuilder>(new OperationBuilderPoolPolicy());
             await op.SendAsync(new Mock<IConnection>().Object).ConfigureAwait(false);
             op.Read(new FakeMemoryOwner<byte>(responsePacket));
 
@@ -61,11 +63,11 @@ namespace Couchbase.UnitTests.KeyValue
             var specs = new MutateInSpecBuilder().Upsert("name", "mike").Replace("bar", "bar").Insert("bah", 0)
                 .Increment("zzz", 10, true).Decrement("xxx", 5, true).Specs;
 
-            var op = new MultiMutation<byte[]>
+            var op = new MultiMutation<byte[]>("thekey", specs)
             {
-                Builder = new MutateInBuilder<byte[]>(null, null, "thekey", specs),
                 Transcoder = new JsonTranscoder()
             };
+            op.OperationBuilderPool = new DefaultObjectPool<OperationBuilder>(new OperationBuilderPoolPolicy());
             await op.SendAsync(new Mock<IConnection>().Object).ConfigureAwait(false);
             op.Read(new FakeMemoryOwner<byte>(bytes));
 
@@ -93,11 +95,11 @@ namespace Couchbase.UnitTests.KeyValue
             var specs = new MutateInSpecBuilder().Upsert("name", "mike").Replace("bar", "bar").Insert("bah", 0)
                 .Increment("zzz", 10, true).Decrement("xxx", 5, true).Specs;
 
-            var op = new MultiMutation<byte[]>
+            var op = new MultiMutation<byte[]>("thekey", specs)
             {
-                Builder = new MutateInBuilder<byte[]>(null, null, "thekey", specs),
                 Transcoder = new JsonTranscoder()
             };
+            op.OperationBuilderPool = new DefaultObjectPool<OperationBuilder>(new OperationBuilderPoolPolicy());
             await op.SendAsync(new Mock<IConnection>().Object).ConfigureAwait(false);
             op.Read(new FakeMemoryOwner<byte>(bytes));
 

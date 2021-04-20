@@ -1,14 +1,9 @@
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
 using Couchbase.Analytics;
 using Couchbase.Core;
-using Couchbase.Core.Bootstrapping;
-using Couchbase.Core.Configuration.Server;
 using Couchbase.Core.DI;
-using Couchbase.Core.Exceptions;
 using Couchbase.Query;
 using Microsoft.Extensions.Logging;
 
@@ -20,42 +15,22 @@ namespace Couchbase.KeyValue
     internal class Scope : IScope
     {
         public const string DefaultScopeName = "_default";
-        public const string DefaultScopeId = "0";
-
         private readonly BucketBase _bucket;
         private readonly ILogger<Scope> _logger;
         private readonly ConcurrentDictionary<string, ICouchbaseCollection> _collections;
         private readonly string _queryContext;
+        private readonly ICollectionFactory _collectionFactory;
 
-        public Scope(ScopeDef? scopeDef, ICollectionFactory collectionFactory, BucketBase bucket, ILogger<Scope> logger)
+        public Scope(string name, BucketBase bucket, ICollectionFactory collectionFactory, ILogger<Scope> logger)
         {
+            Name = name ?? throw new ArgumentNullException(nameof(name));
             _bucket = bucket ?? throw new ArgumentNullException(nameof(bucket));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _collectionFactory = collectionFactory ?? throw new ArgumentNullException(nameof(collectionFactory));
 
-            if (scopeDef != null)
-            {
-                Name = scopeDef.name;
-                Id = scopeDef.uid;
-
-                _collections = new ConcurrentDictionary<string, ICouchbaseCollection>(
-                    scopeDef.collections
-                        .Select(p => collectionFactory.Create(bucket, this, Convert.ToUInt32(p.uid, 16), p.name))
-                        .ToDictionary(x => x.Name, v => v));
-            }
-            else
-            {
-                Name = DefaultScopeName;
-                Id = DefaultScopeId;
-
-                _collections = new ConcurrentDictionary<string, ICouchbaseCollection>();
-                _collections.TryAdd(CouchbaseCollection.DefaultCollectionName,
-                    collectionFactory.Create(bucket, this, null, CouchbaseCollection.DefaultCollectionName));
-            }
-
+            _collections = new ConcurrentDictionary<string, ICouchbaseCollection>();
             _queryContext = $"{_bucket.Name}.{Name}";
         }
-
-        public string Id { get; }
 
         public string Name { get; }
 
@@ -67,19 +42,8 @@ namespace Couchbase.KeyValue
             get
             {
                 _logger.LogDebug("Fetching collection {collectionName}.", name);
-
-                if(_collections.TryGetValue(name, out var collection))
-                {
-                    return collection;
-                }
-
-                //return the default bucket which will fail on first op invocation
-                if (!(_bucket as IBootstrappable).IsBootstrapped)
-                {
-                    return _bucket.DefaultCollection();
-                }
-
-                throw new CollectionNotFoundException($"Cannot find collection {name}");
+                return _collections.GetOrAdd(name,
+                    key => _collectionFactory.Create(_bucket, this, key));
             }
         }
 
@@ -94,6 +58,12 @@ namespace Couchbase.KeyValue
             return this[collectionName];
         }
 
+        public ValueTask<ICouchbaseCollection> CollectionAsync(string collectionName)
+        {
+            _logger.LogDebug("Fetching collection {collectionName}.", collectionName);
+            return new ValueTask<ICouchbaseCollection>(Collection(collectionName));
+        }
+
         /// <summary>
         /// Collection N1QL querying
         /// </summary>
@@ -105,6 +75,8 @@ namespace Couchbase.KeyValue
         {
             options ??= new QueryOptions();
             options.QueryContext = _queryContext;
+            options.ScopeName = Name;
+            options.BucketName = _bucket.Name;
 
             return _bucket.Cluster.QueryAsync<T>(statement, options);
         }
@@ -120,6 +92,8 @@ namespace Couchbase.KeyValue
         {
             options ??=new AnalyticsOptions();
             options.QueryContext = _queryContext;
+            options.BucketName = _bucket.Name;
+            options.ScopeName = Name;
 
             return _bucket.Cluster.AnalyticsQueryAsync<T>(statement, options);
         }

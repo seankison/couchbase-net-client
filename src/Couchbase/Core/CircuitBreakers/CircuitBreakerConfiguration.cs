@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using System.Net.Sockets;
 using System.Threading.Tasks;
 using Couchbase.Core.Exceptions;
@@ -37,24 +36,22 @@ namespace Couchbase.Core.CircuitBreakers
 
         /// <summary>
         /// Called on every response to determine if it is successful or not. The default
-        /// implementation counts SocketException, TimeoutException and TaskCanceledExceptions, RequesCanceledException
+        /// implementation counts SocketException, TimeoutException and TaskCanceledExceptions, RequestCanceledException
         /// as failures.
         /// </summary>
         public Func<Exception, bool> CompletionCallback { get; set; } = delegate(Exception e)
         {
-            switch (e)
+            return e switch
             {
-                case SocketException _:
-                case TimeoutException _:
-                case TaskCanceledException _:
-                case RequestCanceledException _:
-                case AuthenticationFailureException _:
-                    return true;
-                default:
-                    return false;
-            }
+                SocketException _ => true,
+                Exceptions.TimeoutException _ => true,
+                TaskCanceledException _ => true,
+                RequestCanceledException _ => true,
+                AuthenticationFailureException _ => true,
+                _ => false
+            };
         };
 
-        public static CircuitBreakerConfiguration Default = new CircuitBreakerConfiguration();
+        public static CircuitBreakerConfiguration Default = new();
     }
 }

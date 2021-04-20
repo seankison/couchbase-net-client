@@ -8,6 +8,7 @@ using Couchbase.Core.Configuration.Server;
 using Couchbase.Core.DI;
 using Couchbase.Core.Exceptions.KeyValue;
 using Couchbase.Core.IO.Operations;
+using Couchbase.Core.IO.Transcoders;
 using Couchbase.Core.Logging;
 using Couchbase.Management.Buckets;
 using Couchbase.Utils;
@@ -18,6 +19,7 @@ namespace Couchbase.Core
 {
     internal class ClusterContext : IDisposable
     {
+        public readonly ITypeTranscoder GlobalTranscoder = new JsonTranscoder();
         private readonly ILogger<ClusterContext> _logger;
         private readonly IRedactor _redactor;
         private readonly IConfigHandler _configHandler;
@@ -255,6 +257,7 @@ namespace Couchbase.Core
                         .ConfigureAwait(false);
 
                     GlobalConfig = await node.GetClusterMap().ConfigureAwait(false);
+                    GlobalConfig.SetEffectiveNetworkResolution(server, ClusterOptions);
                 }
                 catch (CouchbaseException e)
                 {
@@ -279,7 +282,6 @@ namespace Couchbase.Core
                     //Server is 6.5 and greater and supports GC3P so loop through the global config and
                     //create the nodes that are not associated with any buckets via Select Bucket.
                     GlobalConfig.IsGlobal = true;
-                    GlobalConfig.NetworkResolution = ClusterOptions.NetworkResolution;
                     foreach (var nodeAdapter in GlobalConfig.GetNodes()) //Initialize cluster nodes for global services
                     {
                         //log any alternate address mapping

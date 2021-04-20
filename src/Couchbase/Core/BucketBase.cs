@@ -30,9 +30,9 @@ namespace Couchbase.Core
     internal abstract class BucketBase : IBucket, IConfigUpdateEventSink, IBootstrappable
     {
         private ClusterState _clusterState;
-        private readonly IScopeFactory _scopeFactory;
-        protected readonly ConcurrentDictionary<string, IScope> Scopes = new ConcurrentDictionary<string, IScope>();
-        public readonly ClusterNodeCollection Nodes = new ClusterNodeCollection();
+        protected readonly IScopeFactory _scopeFactory;
+        protected readonly ConcurrentDictionary<string, IScope> Scopes = new();
+        public readonly ClusterNodeCollection Nodes = new();
 
 #pragma warning disable CS8618 // Non-nullable field is uninitialized. Consider declaring as nullable.
         protected BucketBase() { }
@@ -45,7 +45,9 @@ namespace Couchbase.Core
             ILogger logger,
             IRedactor redactor,
             IBootstrapperFactory bootstrapperFactory,
-            IRequestTracer tracer)
+            IRequestTracer tracer,
+            IOperationConfigurator operationConfigurator,
+            IRetryStrategy retryStrategy)
         {
             Name = name ?? throw new ArgumentNullException(nameof(name));
             Context = context ?? throw new ArgumentNullException(nameof(context));
@@ -54,11 +56,15 @@ namespace Couchbase.Core
             Logger = logger ?? throw new ArgumentNullException(nameof(logger));
             Redactor = redactor ?? throw new ArgumentNullException(nameof(redactor));
             Tracer = tracer;
+            RetryStrategy = retryStrategy ?? throw new ArgumentNullException(nameof(retryStrategy));
+
+            _createDefaultScopeFunc = key => _scopeFactory.CreateScope(KeyValue.Scope.DefaultScopeName, this);
 
             BootstrapperFactory = bootstrapperFactory ?? throw new ArgumentNullException(nameof(bootstrapperFactory));
             Bootstrapper = bootstrapperFactory.Create(Context.ClusterOptions.BootstrapPollInterval);
         }
 
+        protected IRetryStrategy RetryStrategy { get; }
         public IBootstrapper Bootstrapper { get; }
         public IBootstrapperFactory BootstrapperFactory { get; }
         protected IRedactor Redactor { get; }
@@ -72,7 +78,7 @@ namespace Couchbase.Core
         protected bool Disposed { get; private set; }
 
         //for propagating errors during bootstrapping
-        private readonly List<Exception> _deferredExceptions = new List<Exception>();
+        private readonly List<Exception> _deferredExceptions = new();
 
         public BucketType BucketType { get; protected set; }
 
@@ -87,16 +93,15 @@ namespace Couchbase.Core
 
         public virtual IScope Scope(string scopeName)
         {
-            if (!Scopes.ContainsKey(scopeName))
-            {
-                LoadManifest();
-            }
+            Logger.LogDebug("Fetching scope {scopeName}", Redactor.UserData(scopeName));
 
-            if (Scopes.TryGetValue(scopeName, out var scope))
-            {
-                return scope;
-            }
-            throw new ScopeNotFoundException(scopeName);
+            return Scopes.GetOrAdd(scopeName, name => _scopeFactory.CreateScope(name, this));
+        }
+
+        /// <inheritdoc />
+        public ValueTask<IScope> ScopeAsync(string scopeName)
+        {
+            return new(Scope(scopeName));
         }
 
         /// <remarks>Volatile</remarks>
@@ -105,17 +110,36 @@ namespace Couchbase.Core
             return Scope(KeyValue.Scope.DefaultScopeName);
         }
 
+        /// <inheritdoc />
+        public ValueTask<IScope> DefaultScopeAsync()
+        {
+            return ScopeAsync(KeyValue.Scope.DefaultScopeName);
+        }
+
         #endregion
 
         #region Collections
 
         public abstract ICouchbaseCollectionManager Collections { get; }
 
+        /// <inheritdoc />
+        public ValueTask<ICouchbaseCollection> DefaultCollectionAsync()
+        {
+            return CollectionAsync(CouchbaseCollection.DefaultCollectionName);
+        }
+
         /// <remarks>Volatile</remarks>
         public ICouchbaseCollection Collection(string collectionName)
         {
             var scope = DefaultScope();
             return scope[collectionName];
+        }
+
+        /// <inheritdoc />
+        public async ValueTask<ICouchbaseCollection> CollectionAsync(string collectionName)
+        {
+            var scope = await DefaultScopeAsync().ConfigureAwait(false);
+            return await scope.CollectionAsync(collectionName).ConfigureAwait(false);
         }
 
         public ICouchbaseCollection DefaultCollection()
@@ -139,24 +163,14 @@ namespace Couchbase.Core
 
         public abstract Task ConfigUpdatedAsync(BucketConfig config);
 
-        protected void LoadManifest()
-        {
-            var subject = this as IBootstrappable;
+        private readonly Func<string, IScope> _createDefaultScopeFunc;
 
-            //The server supports collections so build them from the manifest
-            if (Context.SupportsCollections && subject.IsBootstrapped && BucketType != BucketType.Memcached)
+        protected void LoadDefaultScope()
+        {
+            if (!Context.SupportsCollections)
             {
-                foreach (var scope in _scopeFactory.CreateScopes(this, Manifest!))
-                {
-                    Scopes.AddOrUpdate(scope.Name, scope, (_, oldScope) => scope);
-                }
-            }
-            else
-            {
-                //build a fake scope and collection for pre-6.5 clusters or in the bootstrap failure case
-                //for deferred error handling
-                var defaultScope = _scopeFactory.CreateDefaultScope(this);
-                Scopes.TryAdd(defaultScope.Name, defaultScope);
+                //build a fake scope and collection for pre-6.5 clusters or in the bootstrap failure case for deferred error handling
+                Scopes.GetOrAdd(Couchbase.KeyValue.Scope.DefaultScopeName, _createDefaultScopeFunc);
             }
         }
 
@@ -164,10 +178,10 @@ namespace Couchbase.Core
 
         #region Send and Retry
 
-        internal abstract Task SendAsync(IOperation op, CancellationToken token = default);
+        internal abstract Task SendAsync(IOperation op, CancellationTokenPair tokenPair = default);
 
-        public Task RetryAsync(IOperation operation, CancellationToken token = default) =>
-           RetryOrchestrator.RetryAsync(this, operation, token);
+        public Task RetryAsync(IOperation operation, CancellationTokenPair tokenPair = default) =>
+           RetryOrchestrator.RetryAsync(this, operation, tokenPair);
 
         #endregion
 

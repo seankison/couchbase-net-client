@@ -16,10 +16,10 @@ namespace Couchbase.IntegrationTests
             _fixture = fixture;
         }
 
-        [Fact]
+        [Fact(Skip = "NCBC-2820: skipping for this release.")]
         public async Task Can_get_any_replica()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             var key = Guid.NewGuid().ToString();
             var person = Person.Create();
 
@@ -29,7 +29,7 @@ namespace Couchbase.IntegrationTests
 
                 var result = await collection.GetAnyReplicaAsync(key).ConfigureAwait(false);
                 Assert.NotEqual(ulong.MinValue, result.Cas);
-                Assert.Null(result.Expiry);
+                Assert.Null(result.ExpiryTime);
 
                 var retrievedPerson = result.ContentAs<Person>();
                 Assert.Equal(person.name, retrievedPerson.name);
@@ -40,10 +40,10 @@ namespace Couchbase.IntegrationTests
             }
         }
 
-        [Fact]
+        [Fact(Skip = "NCBC-2820: skipping for this release.")]
         public async Task Can_get_all_replicas()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             var key = Guid.NewGuid().ToString();
             var person = Person.Create();
 
@@ -58,7 +58,7 @@ namespace Couchbase.IntegrationTests
                 foreach (var p in result)
                 {
                     Assert.NotEqual(ulong.MinValue, p.Cas);
-                    Assert.Null(p.Expiry);
+                    Assert.Null(p.ExpiryTime);
 
                     var retrievedPerson = p.ContentAs<Person>();
                     Assert.Equal(person.name, retrievedPerson.name);

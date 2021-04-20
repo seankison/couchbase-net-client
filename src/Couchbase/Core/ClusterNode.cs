@@ -10,6 +10,7 @@ using Couchbase.Core.CircuitBreakers;
 using Couchbase.Core.Configuration.Server;
 using Couchbase.Core.DI;
 using Couchbase.Core.Diagnostics.Tracing;
+using Couchbase.Core.Exceptions;
 using Couchbase.Core.Exceptions.KeyValue;
 using Couchbase.Core.IO;
 using Couchbase.Core.IO.Authentication;
@@ -24,6 +25,7 @@ using Couchbase.Core.Logging;
 using Couchbase.Management.Buckets;
 using Couchbase.Utils;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.ObjectPool;
 
 namespace Couchbase.Core
 {
@@ -35,9 +37,8 @@ namespace Couchbase.Core
         private readonly IRedactor _redactor;
         private readonly IRequestTracer _tracer;
         private readonly ICircuitBreaker _circuitBreaker;
-        private readonly ITypeTranscoder _transcoder; //for operations
+        private readonly ObjectPool<OperationBuilder> _operationBuilderPool;
         private readonly ISaslMechanismFactory _saslMechanismFactory;
-        private static readonly ITypeTranscoder GlobalTranscoder = new JsonTranscoder(); //for system level calls
         private Uri _queryUri;
         private Uri _analyticsUri;
         private Uri _searchUri;
@@ -47,12 +48,15 @@ namespace Couchbase.Core
         private readonly string _cachedToString;
         private volatile bool _disposed;
 
-        public ClusterNode(ClusterContext context, IConnectionPoolFactory connectionPoolFactory, ILogger<ClusterNode> logger, ITypeTranscoder transcoder, ICircuitBreaker circuitBreaker, ISaslMechanismFactory saslMechanismFactory, IRedactor redactor, IPEndPoint endPoint, BucketType bucketType, NodeAdapter nodeAdapter, IRequestTracer tracer)
+        public ClusterNode(ClusterContext context, IConnectionPoolFactory connectionPoolFactory, ILogger<ClusterNode> logger,
+            ObjectPool<OperationBuilder> operationBuilderPool, ICircuitBreaker circuitBreaker, ISaslMechanismFactory saslMechanismFactory,
+            IRedactor redactor, IPEndPoint endPoint, BucketType bucketType, NodeAdapter nodeAdapter, IRequestTracer tracer)
         {
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            _transcoder = transcoder ?? throw new ArgumentNullException(nameof(transcoder));
             _circuitBreaker = circuitBreaker ?? throw new ArgumentException(nameof(circuitBreaker));
+            _operationBuilderPool =
+                operationBuilderPool ?? throw new ArgumentNullException(nameof(operationBuilderPool));
             _saslMechanismFactory = saslMechanismFactory ?? throw new ArgumentException(nameof(saslMechanismFactory));
             _redactor = redactor ?? throw new ArgumentNullException(nameof(redactor));
             _tracer = tracer;
@@ -79,15 +83,15 @@ namespace Couchbase.Core
         }
 
         public ClusterNode(ClusterContext context)
-            : this(context, context.ServiceProvider.GetRequiredService<ITypeTranscoder>(),
+            : this(context, context.ServiceProvider.GetRequiredService<ObjectPool<OperationBuilder>>(),
                 context.ServiceProvider.GetRequiredService<CircuitBreaker>())
         {
         }
 
-        public ClusterNode(ClusterContext context, ITypeTranscoder transcoder, ICircuitBreaker circuitBreaker)
+        public ClusterNode(ClusterContext context, ObjectPool<OperationBuilder> operationBuilderPool, ICircuitBreaker circuitBreaker)
         {
             _context = context;
-            _transcoder = transcoder;
+            _operationBuilderPool = operationBuilderPool;
             _circuitBreaker = circuitBreaker;
         }
 
@@ -185,20 +189,21 @@ namespace Couchbase.Core
             }
         }
 
-        private async Task<ErrorMap> GetErrorMap(IConnection connection, IInternalSpan span, CancellationToken cancellationToken = default)
+        private async Task<ErrorMap> GetErrorMap(IConnection connection, IRequestSpan span, CancellationToken cancellationToken = default)
         {
-            using var childSpan = _tracer.InternalSpan(OperationNames.GetErrorMap, span);
+            using var childSpan = span.ChildSpan(OuterRequestSpans.ServiceSpan.Internal.GetErrorMap);
             using var errorMapOp = new GetErrorMap
             {
-                Transcoder = GlobalTranscoder,
+                Transcoder = _context.GlobalTranscoder,
+                OperationBuilderPool = _operationBuilderPool,
                 Opaque = SequenceGenerator.GetNext(),
                 Span = childSpan
             };
-            await ExecuteOp(connection, errorMapOp, cancellationToken).ConfigureAwait(false);
-            return new ErrorMap(errorMapOp.GetResultWithValue().Content);
+            await ExecuteOp(connection, errorMapOp, CancellationTokenPair.FromInternalToken(cancellationToken)).ConfigureAwait(false);
+            return new ErrorMap(errorMapOp.GetValue());
         }
 
-        private async Task<ServerFeatures[]> Hello(IConnection connection, IInternalSpan span, CancellationToken cancellationToken = default)
+        private async Task<ServerFeatures[]> Hello(IConnection connection, IRequestSpan span, CancellationToken cancellationToken = default)
         {
             var features = new List<ServerFeatures>
             {
@@ -239,32 +244,33 @@ namespace Couchbase.Core
                 }
             }
 
-            using var childSpan = _tracer.InternalSpan(OperationNames.Hello, span);
+            using var childSpan = span.ChildSpan(OuterRequestSpans.ServiceSpan.Internal.Hello);
             using var heloOp = new Hello
             {
                 Key = Core.IO.Operations.Hello.BuildHelloKey(connection.ConnectionId),
                 Content = features.ToArray(),
-                Transcoder = GlobalTranscoder,
+                Transcoder = _context.GlobalTranscoder,
+                OperationBuilderPool = _operationBuilderPool,
                 Opaque = SequenceGenerator.GetNext(),
                 Span = childSpan,
             };
 
-            await ExecuteOp(connection, heloOp, cancellationToken).ConfigureAwait(false);
-            return heloOp.GetResultWithValue().Content;
+            await ExecuteOp(connection, heloOp, CancellationTokenPair.FromInternalToken(cancellationToken)).ConfigureAwait(false);
+            return heloOp.GetValue();
         }
 
         public async Task<Manifest> GetManifest()
         {
-            using var rootSpan = RootSpan(OperationNames.GetManifest);
+            using var rootSpan = RootSpan(OuterRequestSpans.ServiceSpan.Internal.GetManifest);
             using var manifestOp = new GetManifest
             {
-                Transcoder = GlobalTranscoder,
+                Transcoder = _context.GlobalTranscoder,
+                OperationBuilderPool = _operationBuilderPool,
                 Opaque = SequenceGenerator.GetNext(),
                 Span = rootSpan,
             };
             await ExecuteOp(ConnectionPool, manifestOp).ConfigureAwait(false);
-            var manifestResult = manifestOp.GetResultWithValue();
-            return manifestResult.Content;
+            return manifestOp.GetValue();
         }
 
         public async Task SelectBucketAsync(IBucket bucket, CancellationToken cancellationToken = default)
@@ -276,19 +282,18 @@ namespace Couchbase.Core
 
         public async Task<BucketConfig> GetClusterMap()
         {
-            using var rootSpan = RootSpan(OperationNames.GetClusterMap);
+            using var rootSpan = RootSpan(OuterRequestSpans.ServiceSpan.Internal.GetClusterMap);
             using var configOp = new Config
             {
-                CurrentHost = EndPoint,
-                Transcoder = GlobalTranscoder,
+                Transcoder = _context.GlobalTranscoder,
+                OperationBuilderPool = _operationBuilderPool,
                 Opaque = SequenceGenerator.GetNext(),
                 EndPoint = EndPoint,
                 Span = rootSpan,
             };
             await ExecuteOp(ConnectionPool, configOp).ConfigureAwait(false);
 
-            var configResult = configOp.GetResultWithValue();
-            var config = configResult.Content;
+            var config = configOp.GetValue();
 
             if (config != null && EndPoint != null)
             {
@@ -296,22 +301,6 @@ namespace Couchbase.Core
             }
 
             return config;
-        }
-
-        public async Task<uint?> GetCid(string fullyQualifiedName)
-        {
-            using var rootSpan = RootSpan(OperationNames.GetCid);
-            using var getCid = new GetCid
-            {
-                Key = fullyQualifiedName,
-                Transcoder = GlobalTranscoder,
-                Opaque = SequenceGenerator.GetNext(),
-                Content = null,
-                Span = rootSpan,
-            };
-            await ExecuteOp(ConnectionPool, getCid).ConfigureAwait(false);
-            var resultWithValue = getCid.GetResultWithValue();
-            return resultWithValue.Content;
         }
 
         private void BuildServiceUris()
@@ -373,7 +362,7 @@ namespace Couchbase.Core
             }
         }
 
-        public Task SendAsync(IOperation op, CancellationToken token = default)
+        public Task SendAsync(IOperation op, CancellationTokenPair tokenPair = default)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -386,7 +375,7 @@ namespace Couchbase.Core
                 {
                     _circuitBreaker.Track();
 
-                    var sendTask = ExecuteOp(ConnectionPool, op, token);
+                    var sendTask = ExecuteOp(ConnectionPool, op, tokenPair);
 
                     // We don't need the execution context to flow to circuit breaker handling
                     // so we can reduce heap allocations by not flowing.
@@ -434,7 +423,7 @@ namespace Couchbase.Core
                                     _redactor.SystemData(ConnectionPool.EndPoint));
                                 using (var cts = new CancellationTokenSource(_circuitBreaker.CanaryTimeout))
                                 {
-                                    await ExecuteOp(ConnectionPool, new Noop() {Span = op.Span}, cts.Token)
+                                    await ExecuteOp(ConnectionPool, new Noop() {Span = op.Span}, CancellationTokenPair.FromInternalToken(cts.Token))
                                         .ConfigureAwait(false);
                                 }
 
@@ -457,11 +446,11 @@ namespace Couchbase.Core
             }
             else
             {
-                return ExecuteOp(ConnectionPool, op, token);
+                return ExecuteOp(ConnectionPool, op, tokenPair);
             }
         }
 
-        private async Task ExecuteOp(Func<IOperation, object, CancellationToken, Task> sender, IOperation op, object state, CancellationToken token = default)
+        private async Task ExecuteOp(Func<IOperation, object, CancellationToken, Task> sender, IOperation op, object state, CancellationTokenPair tokenPair = default)
         {
             var debugLoggingEnabled = _logger.IsEnabled(LogLevel.Debug);
             if (debugLoggingEnabled)
@@ -473,9 +462,14 @@ namespace Couchbase.Core
             try
             {
                 // Await the send in case the send throws an exception (i.e. SendQueueFullException)
-                await sender(op, state, token).ConfigureAwait(false);
+                await sender(op, state, tokenPair).ConfigureAwait(false);
 
-                var status = await op.Completed.ConfigureAwait(false);
+                ResponseStatus status;
+                using (new OperationCancellationRegistration(op, tokenPair))
+                {
+                    status = await op.Completed.ConfigureAwait(false);
+                }
+
                 if (status != ResponseStatus.Success)
                 {
                     if (debugLoggingEnabled)
@@ -487,24 +481,25 @@ namespace Couchbase.Core
 
                     if (status == ResponseStatus.VBucketBelongsToAnotherServer)
                     {
-                        var config = op.GetConfig(_transcoder);
+                        var config = op.ReadConfig(_context.GlobalTranscoder);
                         _context.PublishConfig(config);
                     }
 
-                    //sub-doc path failures are handled when the ContentAs() method is called.
+                    //sub-doc path failures for lookups are handled when the ContentAs() method is called.
                     //so we simply return back to the caller and let it be handled later.
-                    if (status == ResponseStatus.SubDocMultiPathFailure)
+                    if (status == ResponseStatus.SubDocMultiPathFailure && op.OpCode == OpCode.MultiLookup)
                     {
                         return;
                     }
 
                     // The sub-doc operation was a success, but the doc remains deleted/tombstone.
-                    if (status == ResponseStatus.SubDocSuccessDeletedDocument)
+                    if (status == ResponseStatus.SubDocSuccessDeletedDocument
+                        || status == ResponseStatus.SubdocMultiPathFailureDeleted)
                     {
                         return;
                     }
 
-                    var code = (short)status;
+                    var code = (short) status;
                     if (!ErrorMap.TryGetGetErrorCode(code, out var errorCode))
                     {
                         //We can ignore transport exceptions here as they are generated internally in cases a KV cannot be completed.
@@ -526,9 +521,10 @@ namespace Couchbase.Core
                         CollectionName = op.CName,
                         ScopeName = op.SName,
                         Message = errorCode?.ToString(),
-                        Status = status
+                        Status = status,
+                        OpCode = op.OpCode
                     };
-                    throw status.CreateException(ctx);
+                    throw status.CreateException(ctx, op);
                 }
 
                 if (debugLoggingEnabled)
@@ -537,18 +533,31 @@ namespace Couchbase.Core
                         EndPoint, op.OpCode, _redactor.UserData(op.Key), op.Opaque);
                 }
             }
-
-            catch (OperationCanceledException e)
+            catch (OperationCanceledException)
             {
-                if (debugLoggingEnabled)
-                {
-                    _logger.LogDebug("KV Operation timeout for {key} on server {endpoint}.", op.Key, EndPoint);
-                }
+                // Timeout handling logic is also in RetryOrchestrator, however this method can also be reached without
+                // passing through RetryOrchestrator for cases like diagnostics or bootstrapping. Therefore, we need the logic
+                // in both places.
 
-                if (!e.CancellationToken.IsCancellationRequested)
+                if (!tokenPair.IsExternalCancellation)
                 {
-                    //oddly IsCancellationRequested is false when timed out
-                    throw new TimeoutException();
+                    if (debugLoggingEnabled)
+                    {
+                        _logger.LogDebug("KV Operation timeout for op {opCode} on {endpoint} with key {key} and opaque {opaque}",
+                            EndPoint, op.OpCode, _redactor.UserData(op.Key), op.Opaque);
+                    }
+
+                    // If this wasn't an externally requested cancellation, it's a timeout, so convert to a TimeoutException
+                    ThrowHelper.ThrowTimeoutException(op, new KeyValueErrorContext
+                    {
+                        BucketName = Owner?.Name,
+                        ClientContextId = op.Opaque.ToString(),
+                        DocumentKey = op.Key,
+                        Cas = op.Cas,
+                        CollectionName = op.CName,
+                        ScopeName = op.SName,
+                        OpCode = op.OpCode
+                    });
                 }
 
                 throw;
@@ -564,23 +573,23 @@ namespace Couchbase.Core
             }
         }
 
-        public Task ExecuteOp(IOperation op, CancellationToken token = default)
+        public Task ExecuteOp(IOperation op, CancellationTokenPair tokenPair = default)
         {
-            return ExecuteOp(ConnectionPool, op, token);
+            return ExecuteOp(ConnectionPool, op, tokenPair);
         }
 
-        private Task ExecuteOp(IConnectionPool connectionPool, IOperation op, CancellationToken token = default)
+        private Task ExecuteOp(IConnectionPool connectionPool, IOperation op, CancellationTokenPair tokenPair = default)
         {
             // op and connectionPool come back via lambda parameters to prevent an extra closure heap allocation
             return ExecuteOp((op2, state, effectiveToken) => ((IConnectionPool)state).SendAsync(op2, effectiveToken),
-                op, connectionPool, token);
+                op, connectionPool, tokenPair);
         }
 
-        public Task ExecuteOp(IConnection connection, IOperation op, CancellationToken token = default)
+        public Task ExecuteOp(IConnection connection, IOperation op, CancellationTokenPair tokenPair = default)
         {
             // op and connection come back via lambda parameters to prevent an extra closure heap allocation
             return ExecuteOp((op2, state, effectiveToken) => op2.SendAsync((IConnection)state, effectiveToken),
-                op, connection, token);
+                op, connection, tokenPair);
         }
 
         #region IConnectionInitializer
@@ -607,6 +616,7 @@ namespace Couchbase.Core
                     _context.ClusterOptions.Password);
 
                 await saslMechanism.AuthenticateAsync(connection, cancellationToken).ConfigureAwait(false);
+                rootSpan.Dispose();
             }
         }
 
@@ -614,14 +624,15 @@ namespace Couchbase.Core
         {
             try
             {
-                using var rootSpan = RootSpan(OperationNames.SelectBucket);
+                using var rootSpan = RootSpan(OuterRequestSpans.ServiceSpan.Internal.SelectBucket);
                 using var selectBucketOp = new SelectBucket
                 {
-                    Transcoder = GlobalTranscoder,
+                    Transcoder = _context.GlobalTranscoder,
+                    OperationBuilderPool = _operationBuilderPool,
                     Key = bucketName,
                     Span = rootSpan,
                 };
-                await ExecuteOp(connection, selectBucketOp, cancellationToken).ConfigureAwait(false);
+                await ExecuteOp(connection, selectBucketOp, CancellationTokenPair.FromInternalToken(cancellationToken)).ConfigureAwait(false);
             }
             catch (DocumentNotFoundException)
             {
@@ -686,10 +697,17 @@ namespace Couchbase.Core
 
         #region Tracing
 
-        private IInternalSpan RootSpan(string operation) =>
-            _tracer.RootSpan(CouchbaseTags.Service, operation);
+        #region tracing
+        private IRequestSpan RootSpan(string operation)
+        {
+            var span = _tracer.RequestSpan(operation);
+            span.SetAttribute(OuterRequestSpans.Attributes.System.Key, OuterRequestSpans.Attributes.System.Value);
+            span.SetAttribute(OuterRequestSpans.Attributes.Service, nameof(OuterRequestSpans.ServiceSpan.Kv).ToLowerInvariant());
+            span.SetAttribute(OuterRequestSpans.Attributes.Operation, operation);
+            return span;
+        }
+        #endregion
 
-        private IInternalSpan RootSpan(string operation, OperationBase op) => RootSpan(operation).OperationId(op);
         #endregion
     }
 }

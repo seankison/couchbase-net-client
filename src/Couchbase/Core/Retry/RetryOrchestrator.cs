@@ -2,7 +2,6 @@ using System;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
-using Couchbase.Core.DI;
 using Couchbase.Core.Exceptions;
 using Couchbase.Core.Exceptions.KeyValue;
 using Couchbase.Core.IO.Operations;
@@ -10,6 +9,7 @@ using Couchbase.Core.Logging;
 using Couchbase.Core.Retry.Query;
 using Couchbase.Core.Sharding;
 using Couchbase.KeyValue;
+using Couchbase.Utils;
 using Microsoft.Extensions.Logging;
 
 namespace Couchbase.Core.Retry
@@ -156,20 +156,24 @@ namespace Couchbase.Core.Retry
             }
         }
 
-        public async Task RetryAsync(BucketBase bucket, IOperation operation, CancellationToken token = default)
+        public async Task RetryAsync(BucketBase bucket, IOperation operation, CancellationTokenPair tokenPair = default)
         {
             try
             {
                 var backoff = ControlledBackoff.Create();
+                operation.Token = tokenPair;
+
                 do
                 {
+                    tokenPair.ThrowIfCancellationRequested();
+
                     try
                     {
                         operation.Attempts++;
 
                         try
                         {
-                            await bucket.SendAsync(operation, token).ConfigureAwait(false);
+                            await bucket.SendAsync(operation, tokenPair).ConfigureAwait(false);
                             break;
                         }
                         catch (CollectionOutdatedException e)
@@ -187,56 +191,56 @@ namespace Couchbase.Core.Retry
                             }
                         }
                     }
-                    catch (CouchbaseException e)
+                    catch (CouchbaseException e) when (e is IRetryable && !tokenPair.IsCancellationRequested)
                     {
-                        if (e is IRetryable)
+                        var reason = e.ResolveRetryReason();
+                        if (reason.AlwaysRetry())
                         {
-                            var reason = e.ResolveRetryReason();
-                            if (reason.AlwaysRetry())
-                            {
-                                token.ThrowIfCancellationRequested();
+                            _logger.LogDebug("Retrying op {opaque}/{key} because {reason} and always retry.",
+                                operation.Opaque,
+                                operation.Key, reason);
 
-                                _logger.LogDebug("Retrying op {opaque}/{key} because {reason} and always retry.",
-                                    operation.Opaque,
-                                    operation.Key, reason);
+                            operation.Reset(); // Reset first so operation is not marked as sent if canceled during the delay
 
-                                await backoff.Delay(operation).ConfigureAwait(false);
-                                operation.Reset();
-                                continue;
-                            }
+                            await backoff.Delay(operation).ConfigureAwait(false);
+                            continue;
+                        }
 
-                            var strategy = operation.RetryStrategy;
-                            var action = strategy.RetryAfter(operation, reason);
+                        var strategy = operation.RetryStrategy;
+                        var action = strategy.RetryAfter(operation, reason);
 
-                            if (action.Retry)
-                            {
-                                _logger.LogDebug("Retrying op {opaque}/{key} because {reason} and action duration.",
-                                    operation.Opaque,
-                                    operation.Key, reason);
+                        if (action.Retry)
+                        {
+                            _logger.LogDebug("Retrying op {opaque}/{key} because {reason} and action duration.",
+                                operation.Opaque,
+                                operation.Key, reason);
 
-                                operation.Reset();
-                                await Task.Delay(action.DurationValue.Value, token).ConfigureAwait(false);
-                            }
-                            else
-                            {
-                                throw; //don't retry
-                            }
+                            // Reset first so operation is not marked as sent if canceled during the delay
+                            operation.Reset();
+
+                            await Task.Delay(action.DurationValue.GetValueOrDefault(), tokenPair)
+                                .ConfigureAwait(false);
                         }
                         else
                         {
-                            throw;
+                            throw; //don't retry
                         }
                     }
                 } while (true);
             }
-            catch (OperationCanceledException) { ThrowTimeoutException(operation, operation.Timeout); }
-        }
-
-        private static void ThrowTimeoutException(IOperation operation, TimeSpan? timeout)
-        {
-            throw new TimeoutException(
-                $"The operation {operation.Opaque}/{operation.Opaque} timed out after {timeout}. " +
-                $"It was retried {operation.Attempts} times using {operation.RetryStrategy.GetType()}.");
+            catch (OperationCanceledException) when (!tokenPair.IsExternalCancellation)
+            {
+                ThrowHelper.ThrowTimeoutException(operation, new KeyValueErrorContext
+                {
+                    BucketName = operation.BucketName,
+                    ClientContextId = operation.Opaque.ToString(),
+                    DocumentKey = operation.Key,
+                    Cas = operation.Cas,
+                    CollectionName = operation.CName,
+                    ScopeName = operation.SName,
+                    OpCode = operation.OpCode
+                });
+            }
         }
 
         // protected internal for a unit test seam
@@ -244,22 +248,16 @@ namespace Couchbase.Core.Retry
         {
             try
             {
-                var vBucket = (VBucket) bucket.KeyMapper!.MapKey(op.Key);
-                var endPoint = op.ReplicaIdx > 0 ? vBucket.LocateReplica(op.ReplicaIdx) : vBucket.LocatePrimary();
+                var scope = await bucket.ScopeAsync(op.SName).ConfigureAwait(false);
+                var collection = (IInternalCollection) await scope.CollectionAsync(op.CName).ConfigureAwait(false);
 
-                if (bucket.Nodes.TryGet(endPoint!, out var clusterNode))
-                {
-                    var scope = bucket.Scope(op.SName);
-                    var collection = (CouchbaseCollection) scope.Collection(op.CName);
+                var newCid = await ((IInternalScope) scope).GetCidAsync($"{op.SName}.{op.CName}").ConfigureAwait(false);
+                collection.Cid = newCid;
 
-                    var newCid = await clusterNode.GetCid($"{op.SName}.{op.CName}").ConfigureAwait(false);
-                    collection.Cid = newCid;
+                op.Reset();
+                op.Cid = newCid;
 
-                    op.Reset();
-                    op.Cid = newCid;
-
-                    return true;
-                }
+                return true;
             }
             catch (Exception ex)
             {

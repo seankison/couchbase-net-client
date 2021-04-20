@@ -57,7 +57,7 @@ namespace Couchbase.Core.IO.Connections
                 throw;
             }
 
-#if NETCOREAPP3_0
+#if NETCOREAPP_GTE_3_0
             _multiplexLogger.LogDebug("Setting TCP Keep-Alives using SocketOptions - enable keep-alives {EnableTcpKeepAlives}, time {TcpKeepAliveTime}, interval {TcpKeepAliveInterval}.",
                 _clusterOptions.EnableTcpKeepAlives, _clusterOptions.TcpKeepAliveTime, _clusterOptions.TcpKeepAliveInterval);
 
@@ -84,7 +84,7 @@ namespace Couchbase.Core.IO.Connections
             if (_clusterOptions.EffectiveEnableTls)
             {
                 var sslStream = new SslStream(new NetworkStream(socket, true), false,
-                    _clusterOptions.ValidateCertificateCallback);
+                    _clusterOptions.KvCertificateCallbackValidation);
 
                 //Check if were using x509 auth, if so fetch the certificates
                 X509Certificate2Collection? certs = null;

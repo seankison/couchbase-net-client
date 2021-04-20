@@ -11,6 +11,9 @@ namespace Couchbase.Core.IO.Operations
     /// <typeparam name="T"></typeparam>
     internal abstract class MutationOperationBase<T> : OperationBase<T>
     {
+        /// <inheritdoc />
+        public override bool IsReadOnly => false;
+
         protected MutationOperationBase(string bucketName, string key)
         {
             BucketName = bucketName;
@@ -26,15 +29,13 @@ namespace Couchbase.Core.IO.Operations
         /// only persistent Couchbase buckets that use VBucket Hashing support mutation tokens.
         /// </summary>
         /// <param name="buffer">The memcached response buffer.</param>
-        public override void ReadExtras(ReadOnlySpan<byte> buffer)
+        protected override void ReadExtras(ReadOnlySpan<byte> buffer)
         {
             base.ReadExtras(buffer);
             TryReadMutationToken(buffer);
         }
 
-        public override bool RequiresKey => true;
-
-        public override void WriteFramingExtras(OperationBuilder builder)
+        protected override void WriteFramingExtras(OperationBuilder builder)
         {
             if (DurabilityLevel == DurabilityLevel.None)
             {

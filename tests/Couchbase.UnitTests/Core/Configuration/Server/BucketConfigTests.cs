@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Net;
@@ -9,12 +10,14 @@ using Couchbase.Core.Configuration.Server;
 using Couchbase.Core.DI;
 using Couchbase.Core.Diagnostics.Tracing;
 using Couchbase.Core.IO.Connections;
+using Couchbase.Core.IO.Operations;
 using Couchbase.Core.IO.Transcoders;
 using Couchbase.Core.Logging;
 using Couchbase.Management.Buckets;
 using Couchbase.UnitTests.Utils;
 using Couchbase.Utils;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.ObjectPool;
 using Moq;
 using Newtonsoft.Json;
 using Xunit;
@@ -170,14 +173,15 @@ namespace Couchbase.UnitTests.Core.Configuration.Server
             {
                 var endPoint = await ipEndpointService.GetIpEndPointAsync(server).ConfigureAwait(false);
                 var clusterNode = new ClusterNode(context, new Mock<IConnectionPoolFactory>().Object,
-                    new Mock<ILogger<ClusterNode>>().Object, new Mock<ITypeTranscoder>().Object,
+                    new Mock<ILogger<ClusterNode>>().Object,
+                    new DefaultObjectPool<OperationBuilder>(new OperationBuilderPoolPolicy()),
                     new Mock<ICircuitBreaker>().Object,
                     new Mock<ISaslMechanismFactory>().Object,
                     new Mock<IRedactor>().Object,
                     endPoint,
                     BucketType.Couchbase,
                     server,
-                    NullRequestTracer.Instance);
+                    NoopRequestTracer.Instance);
 
                 context.AddNode(clusterNode);
                 bucketNodes.TryAdd(endPoint, clusterNode);
@@ -192,9 +196,10 @@ namespace Couchbase.UnitTests.Core.Configuration.Server
                 }
 
                 var clusterNode = new ClusterNode(context, new Mock<IConnectionPoolFactory>().Object,
-                    new Mock<ILogger<ClusterNode>>().Object, new Mock<ITypeTranscoder>().Object,
+                    new Mock<ILogger<ClusterNode>>().Object,
+                    new DefaultObjectPool<OperationBuilder>(new OperationBuilderPoolPolicy()),
                     new Mock<ICircuitBreaker>().Object, new Mock<ISaslMechanismFactory>().Object,
-                    new Mock<IRedactor>().Object, endPoint, BucketType.Memcached, nodesExt, NullRequestTracer.Instance);
+                    new Mock<IRedactor>().Object, endPoint, BucketType.Memcached, nodesExt, NoopRequestTracer.Instance);
 
                 context.AddNode(clusterNode);
                 bucketNodes.TryAdd(endPoint, clusterNode);
@@ -258,6 +263,46 @@ namespace Couchbase.UnitTests.Core.Configuration.Server
                 var alternateAddress = nodesExt[i].AlternateAddresses[NetworkResolution.External];
                 Assert.Equal(nodes[i].Hostname, alternateAddress.Hostname);
             }
+        }
+
+        [Theory]
+        [InlineData(NetworkResolution.External, 32178, 31903)]
+        [InlineData(NetworkResolution.Default, 8093, 18093)]
+        [InlineData(NetworkResolution.Auto, 32178, 31903)]
+        public void Test_NetworkResolution(string networkResolution, int n1qlPort, int n1qlSslPort)
+        {
+            var config = JsonConvert.DeserializeObject<BucketConfig>(ResourceHelper.ReadResource(@"Documents\Configs\missing-query.json"));
+            config.NetworkResolution = networkResolution;
+
+            var nodes = config.GetNodes();
+            var query = nodes.FirstOrDefault(x => x.IsQueryNode);
+
+            Assert.NotNull(query);
+            Assert.Equal(n1qlPort, query.N1Ql);
+            Assert.Equal(n1qlSslPort, query.N1QlSsl);
+        }
+
+        [Theory]
+        [InlineData(NetworkResolution.Auto, NetworkResolution.External, @"Documents\Configs\missing-query.json", "10.100.62.66", 31124)]
+        [InlineData(NetworkResolution.External, NetworkResolution.External, @"Documents\Configs\missing-query.json", "10.100.62.66", 31124)]
+        [InlineData(NetworkResolution.Auto, NetworkResolution.Default, @"Documents\Configs\config-alternate-addresses.json", "172.17.0.2", 11210)]
+        public void Test_SetNetworkResolution(string networkResolution, string effectiveResolution, string configPath, string hostname, int port)
+        {
+            var options = new ClusterOptions {NetworkResolution = networkResolution};
+
+            var config = JsonConvert.DeserializeObject<BucketConfig>(ResourceHelper.ReadResource(configPath));
+            config.SetEffectiveNetworkResolution(new HostEndpoint(hostname, port), options);
+
+            Assert.Equal(effectiveResolution, options.EffectiveNetworkResolution);
+        }
+
+        [Fact]
+        public void Test_Max_Revision_Size()
+        {
+            var config2 = ResourceHelper.ReadResource<BucketConfig>(@"Documents\Configs\config-bigly-yuge-rev.json");
+
+            var expected = 18446744073709551615ul;
+            Assert.Equal(expected, config2.Rev);
         }
     }
 }

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using Couchbase.Core.Exceptions.KeyValue;
 using Couchbase.Core.IO.Transcoders;
@@ -25,17 +27,17 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Can_Return_Expiry()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             await collection.UpsertAsync("Can_Return_Expiry()", new {foo = "bar", bar = "foo"}, options =>options.Expiry(TimeSpan.FromHours(1))).ConfigureAwait(false);
 
             var result = await collection.GetAsync("Can_Return_Expiry()", options=>options.Expiry()).ConfigureAwait(false);
-            Assert.NotNull(result.Expiry);
+            Assert.NotNull(result.ExpiryTime);
         }
 
         [Fact]
         public async Task LookupIn_Can_Return_FullDoc()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             await collection.UpsertAsync("LookupIn_Can_Return_FullDoc()", new {foo = "bar", bar = "foo"}, options =>options.Expiry(TimeSpan.FromHours(1))).ConfigureAwait(false);
 
             var result = await collection.LookupInAsync("LookupIn_Can_Return_FullDoc()", builder=>builder.GetFull());
@@ -46,7 +48,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task LookupIn_Xattr_In_Any_Order()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             await collection.UpsertAsync(nameof(LookupIn_Xattr_In_Any_Order), new { foo = "bar", bar = "foo" }, options => options.Expiry(TimeSpan.FromHours(1))).ConfigureAwait(false);
             var result = await collection.LookupInAsync(nameof(LookupIn_Xattr_In_Any_Order), specs =>
                 specs.Get("$document", true)
@@ -64,7 +66,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Can_perform_lookup_in()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             await collection.UpsertAsync(DocumentKey, new {foo = "bar", bar = "foo"}).ConfigureAwait(false);
 
             var result = await collection.LookupInAsync(DocumentKey, ops =>
@@ -78,9 +80,34 @@ namespace Couchbase.IntegrationTests
         }
 
         [Fact]
+        public async Task Can_perform_lookup_in_via_lambda()
+        {
+            var key = Guid.NewGuid().ToString();
+
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
+            await collection.UpsertAsync(key, new TestDoc {Foo = "bar", Bar = "foo"}).ConfigureAwait(false);
+
+            try
+            {
+                var result = await collection.LookupInAsync<TestDoc>(key, ops =>
+                {
+                    ops.Get(p => p.Foo);
+                    ops.Get(p => p.Bar);
+                }).ConfigureAwait(false);
+
+                Assert.Equal("bar", result.ContentAs(p => p.Foo));
+                Assert.Equal("foo", result.ContentAs(p => p.Bar));
+            }
+            finally
+            {
+                await collection.RemoveAsync(key);
+            }
+        }
+
+        [Fact]
         public async Task Can_perform_lookup_in_with_Exists()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             await collection.UpsertAsync(DocumentKey, new { foo = "bar", bar = "foo" }).ConfigureAwait(false);
 
             var result = await collection.LookupInAsync(DocumentKey, ops =>
@@ -97,7 +124,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Can_do_lookup_in_with_array()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             await collection.UpsertAsync(DocumentKey, new {foo = "bar", bar = "foo"}).ConfigureAwait(false);
 
             var result = await collection.LookupInAsync(DocumentKey, new[]
@@ -113,7 +140,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Can_perform_mutate_in()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             await collection.UpsertAsync(DocumentKey,  new {foo = "bar", bar = "foo"}).ConfigureAwait(false);
 
             await collection.MutateInAsync(DocumentKey, ops =>
@@ -143,10 +170,52 @@ namespace Couchbase.IntegrationTests
         }
 
         [Fact]
+        public async Task Can_perform_mutate_in_via_lambda()
+        {
+            var key = Guid.NewGuid().ToString();
+
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
+            await collection.UpsertAsync(key, new TestDoc {Foo = "bar", Bar = "foo"}).ConfigureAwait(false);
+
+            try
+            {
+                var res = await collection.MutateInAsync<TestDoc>(key, ops =>
+                {
+                    ops.Upsert(p => p.Name, "mike");
+                    ops.Replace(p => p.Bar, "bar");
+                    ops.Insert(p => p.Bah, 0);
+                    ops.Increment(p => p.Zzz, 10, true);
+                    ops.Decrement(p => p.Xxx, 5, true);
+                }).ConfigureAwait(false);
+
+                using (var getResult = await collection
+                    .GetAsync(key, options => options.Transcoder(new LegacyTranscoder())).ConfigureAwait(false))
+                {
+                    var content = getResult.ContentAs<string>();
+
+                    var expected = new
+                    {
+                        foo = "bar",
+                        bar = "bar",
+                        name = "mike",
+                        bah = 0,
+                        zzz = 10,
+                        xxx = -5
+                    };
+                    Assert.Equal(JsonConvert.SerializeObject(expected), content);
+                }
+            }
+            finally
+            {
+                await collection.RemoveAsync(key);
+            }
+        }
+
+        [Fact]
         public async Task MutateIn_Xattr_In_Any_Order()
         {
             var docId = nameof(MutateIn_Xattr_In_Any_Order);
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             await collection.UpsertAsync(docId, new { foo = "bar", bar = "foo", xxx = 0 }).ConfigureAwait(false);
 
             var mutateResult = await collection.MutateInAsync(docId, ops =>
@@ -180,7 +249,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Can_perform_mutate_in_with_array()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             await collection.UpsertAsync(DocumentKey, new {foo = "bar", bar = "foo"}).ConfigureAwait(false);
 
             var result = await collection.MutateInAsync(DocumentKey, new[]
@@ -204,7 +273,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Test_When_Connection_Fails_It_Is_Recreated()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
 
             try
             {
@@ -227,7 +296,7 @@ namespace Couchbase.IntegrationTests
         [Fact]
         public async Task Test_MutateInAsync_Upsert_And_Xattr_Doc()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
 
             var result = await collection.MutateInAsync("foo", specs =>
                 {
@@ -240,10 +309,78 @@ namespace Couchbase.IntegrationTests
             Assert.Equal("value", (string)lookupResult.ContentAs<string>(0));
         }
 
+        [Fact]
+        public async Task LookupIn_BadPathNoException()
+        {
+            (var documentKey, var collection) = await PrepDoc();
+
+            // LookupIn should not throw if one path is bad.
+            var lookupInResult = await collection.LookupInAsync(documentKey, specs => specs.Get("foo").Get("doesNotExist"));
+            var fooValue = lookupInResult.ContentAs<string>(0);
+            Assert.Equal("bar", fooValue);
+            Assert.False(lookupInResult.Exists(1));
+        }
+
+        private async Task<(string documentKey, ICouchbaseCollection collection)> PrepDoc([CallerMemberName]string testName = nameof(SubdocTests))
+        {
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
+            var documentKey = testName + Guid.NewGuid().ToString();
+            var doc = new { foo = "bar", baz = "baz" };
+            var insertResult = await collection.InsertAsync(documentKey, doc, opts => opts.Expiry(TimeSpan.FromMinutes(10)));
+            return (documentKey, collection);
+        }
+
+        [Fact]
+        public async Task MutateIn_PathInvalid()
+        {
+            (var documentKey, var collection) = await PrepDoc();
+            var t = collection.MutateInAsync(documentKey,
+                specs => specs.Upsert("foo", "bar_updated").Replace("baz\\$$-foo", "anything"),
+                opts => opts.StoreSemantics(StoreSemantics.Replace));
+
+            var ex = await Assert.ThrowsAsync<PathInvalidException>(() => t);
+
+        }
+
+        [Fact]
+        public async Task MutateIn_PathTooBig()
+        {
+            (var documentKey, var collection) = await PrepDoc();
+            var tooLong = string.Join('.', System.Linq.Enumerable.Repeat("a", 300));
+            var t = collection.MutateInAsync(documentKey,
+                specs => specs.Upsert("foo", "bar_updated").Replace("baz." + tooLong, "anything"),
+                opts => opts.StoreSemantics(StoreSemantics.Replace));
+
+            var ex = await Assert.ThrowsAsync<PathTooBigException>(() => t);
+        }
+
+        [Fact]
+        public async Task MutateIn_PathMismatch()
+        {
+            (var documentKey, var collection) = await PrepDoc();
+            var tooLong = string.Join('.', System.Linq.Enumerable.Repeat("a", 16));
+            var t = collection.MutateInAsync(documentKey,
+                specs => specs.Upsert("foo", "bar_updated").Replace("baz." + tooLong, "anything"),
+                opts => opts.StoreSemantics(StoreSemantics.Replace));
+
+            var ex = await Assert.ThrowsAsync<PathMismatchException>(() => t);
+        }
+
+        [Fact]
+        public async Task MutateIn_PathNotFound()
+        {
+            (var documentKey, var collection) = await PrepDoc();
+            var t = collection.MutateInAsync(documentKey,
+                specs => specs.Replace("doesNotExist", "anything"),
+                opts => opts.StoreSemantics(StoreSemantics.Replace));
+
+            var ex = await Assert.ThrowsAsync<PathNotFoundException>(() => t);
+        }
+
         [CouchbaseVersionDependentFact(MinVersion = "6.6.0")]
         public async Task MutateIn_CreateAsDeleted_Creates_Tombstone()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             var documentKey = nameof(MutateIn_CreateAsDeleted_Creates_Tombstone) + Guid.NewGuid().ToString();
             var result = await collection.MutateInAsync(documentKey, specs =>
                 {
@@ -262,12 +399,19 @@ namespace Couchbase.IntegrationTests
             Assert.Equal("value", (string)lookupResult.ContentAs<string>(0));
 
             Assert.True(lookupResult.IsDeleted);
+
+            var lookupWithMissingXattr = await collection.LookupInAsync(documentKey,
+                specs => specs.Get("txn.id", isXattr: true).Get("txn.stgd", isXattr: true).Get("$document", isXattr: true),
+                opts => opts.AccessDeleted(true));
+            Assert.True(lookupWithMissingXattr.IsDeleted);
+            var docMeta = lookupWithMissingXattr.ContentAs<JObject>(2);
+            Assert.NotNull(docMeta);
         }
 
         [Fact]
         public async Task MutateIn_Remove_Succeeds()
         {
-            var collection = await _fixture.GetDefaultCollection().ConfigureAwait(false);
+            var collection = await _fixture.GetDefaultCollectionAsync().ConfigureAwait(false);
             var documentKey = nameof(MutateIn_Remove_Succeeds);
             var o = JObject.FromObject(new
             {
@@ -276,13 +420,36 @@ namespace Couchbase.IntegrationTests
                 description = (string) null
             });
 
-            await collection.UpsertAsync("test", o);
-            var result = await collection.MutateInAsync("test", specs =>
+            await collection.UpsertAsync(documentKey, o);
+            var result = await collection.MutateInAsync(documentKey, specs =>
             {
                 specs.Remove("title").Insert<string>("title", null);
                 specs.Insert<string>("newKey", null, true);
                 specs.Upsert<string>("title", null, true);
             });
         }
+
+        #region Helpers
+
+        private class TestDoc
+        {
+            public string Foo { get; set; }
+
+            public string Bar { get; set; }
+
+            [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+            public string Name { get; set; }
+
+            [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+            public int Bah { get; set;}
+
+            [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+            public int Zzz { get; set; }
+
+            [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+            public int Xxx { get; set; }
+        }
+
+        #endregion
     }
 }

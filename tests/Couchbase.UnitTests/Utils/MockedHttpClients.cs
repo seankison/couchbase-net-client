@@ -21,7 +21,8 @@ namespace Couchbase.UnitTests.Utils
 {
     internal static class MockedHttpClients
     {
-        public static IQueryClient QueryClient([NotNull] Queue<Task<HttpResponseMessage>> responses, bool enableEnhancedPreparedStatements)
+        public static IQueryClient QueryClient([NotNull] Queue<Task<HttpResponseMessage>> responses,
+            bool enableEnhancedPreparedStatements)
         {
             var handlerMock = new Mock<HttpMessageHandler>();
             handlerMock.Protected().Setup<Task<HttpResponseMessage>>(
@@ -31,7 +32,7 @@ namespace Couchbase.UnitTests.Utils
 
             var httpClient = new CouchbaseHttpClient(handlerMock.Object)
             {
-                BaseAddress = new Uri("http://localhost:8091"),
+                BaseAddress = new Uri("http://localhost:8091")
             };
 
             IServiceCollection serviceCollection = new ServiceCollection();
@@ -48,7 +49,7 @@ namespace Couchbase.UnitTests.Utils
 
             var serializer = new DefaultSerializer();
             return new QueryClient(httpClient, mockServiceUriProvider.Object, serializer,
-                new Mock<ILogger<QueryClient>>().Object, NullRequestTracer.Instance)
+                new Mock<ILogger<QueryClient>>().Object, NoopRequestTracer.Instance)
             {
                 EnhancedPreparedStatementsEnabled = enableEnhancedPreparedStatements
             };
@@ -81,7 +82,7 @@ namespace Couchbase.UnitTests.Utils
 
             var serializer = new DefaultSerializer();
             return new AnalyticsClient(httpClient, mockServiceUriProvider.Object, serializer,
-                new Mock<ILogger<AnalyticsClient>>().Object, NullRequestTracer.Instance);
+                new Mock<ILogger<AnalyticsClient>>().Object, NoopRequestTracer.Instance);
         }
 
         internal static ISearchClient SearchClient([NotNull] Queue<Task<HttpResponseMessage>> responses)
@@ -110,7 +111,7 @@ namespace Couchbase.UnitTests.Utils
                 .Returns(new Uri("http://localhost:8094"));
 
             return new SearchClient(httpClient, mockServiceUriProvider.Object,
-                new Mock<ILogger<SearchClient>>().Object, NullRequestTracer.Instance);
+                new Mock<ILogger<SearchClient>>().Object, NoopRequestTracer.Instance);
         }
 
         internal static IViewClient ViewClient([NotNull] Queue<Task<HttpResponseMessage>> responses)
@@ -134,8 +135,8 @@ namespace Couchbase.UnitTests.Utils
             loggerFactory.AddFile("Logs/myapp-{Date}.txt", LogLevel.Debug);
 
             var serializer = new DefaultSerializer();
-            return new ViewClient(httpClient, serializer, new Mock<ILogger<ViewClient>>().Object, new Mock<IRedactor>().Object, NullRequestTracer.Instance);
+            return new ViewClient(httpClient, serializer, new Mock<ILogger<ViewClient>>().Object,
+                new Mock<IRedactor>().Object, NoopRequestTracer.Instance);
         }
     }
 }
-
